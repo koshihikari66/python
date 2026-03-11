@@ -17,7 +17,6 @@ K = np.array([[fx,  0, cx],
 CENTER = (int(cx), int(cy))
 
 # ── 칼만 필터 초기화 ──────────────────────────────────────────
-# 상태: [x, y, vx, vy]  /  측정: [x, y]
 kf = cv2.KalmanFilter(4, 2)
 
 kf.transitionMatrix = np.array([
@@ -32,11 +31,14 @@ kf.measurementMatrix = np.array([
     [0, 1, 0, 0],
 ], dtype=np.float32)
 
-kf.processNoiseCov     = np.eye(4, dtype=np.float32) * 1e-2   # Q  (크게 → 측정 신뢰)
-kf.measurementNoiseCov = np.eye(2, dtype=np.float32) * 5   # R  (크게 → 예측 신뢰)
+kf.processNoiseCov     = np.eye(4, dtype=np.float32) * 1e-2
+kf.measurementNoiseCov = np.eye(2, dtype=np.float32) * 5
 kf.errorCovPost        = np.eye(4, dtype=np.float32)
 
-kf_initialized = False   # 첫 측정값으로 상태 초기화 여부
+kf_initialized        = False
+kf_lost_count         = 0
+KF_LOST_MAX           = 5
+last_kf_x, last_kf_y  = CENTER
 # ─────────────────────────────────────────────────────────────
 
 def pixel_to_ray(u, v):
@@ -82,17 +84,17 @@ params.blobColor = 255
 params.filterByCircularity = False
 params.filterByConvexity = False
 params.filterByInertia = True
-params.minInertiaRatio = 0.5 
+params.minInertiaRatio = 0.5
 params.minThreshold = 200
 params.maxThreshold = 230
 params.thresholdStep = 10
 detector = cv2.SimpleBlobDetector_create(params)
 
-ABS_MIN_BRIGHTNESS = 160
-BRIGHT_PERCENTILE = 99.5
+ABS_MIN_BRIGHTNESS    = 160
+BRIGHT_PERCENTILE     = 99.5
 VALID_BRIGHTNESS_SMALL = 160
-VALID_BRIGHTNESS_BIG = 255
-SMALL_BLOB_SIZE = 3
+VALID_BRIGHTNESS_BIG  = 255
+SMALL_BLOB_SIZE       = 3
 
 ray_center = pixel_to_ray(*CENTER)
 cv2.namedWindow("Angle Viewer")
@@ -136,26 +138,41 @@ while True:
             cxx, cyy = maxLoc
             method = "MAXPIX"
 
-    # ── 칼만 필터 predict / correct ──────────────────────────
-    if kf_initialized:
-        predicted = kf.predict()
-        kf_x, kf_y = int(predicted[0]), int(predicted[1])
-
+    # ── 칼만 필터 ─────────────────────────────────────────────
     if cxx is not None:
+        kf_lost_count = 0
+
         if not kf_initialized:
             kf.statePre  = np.array([cxx, cyy, 0, 0], dtype=np.float32).reshape(4, 1)
             kf.statePost = np.array([cxx, cyy, 0, 0], dtype=np.float32).reshape(4, 1)
             kf_initialized = True
 
+        kf.predict()
         measurement = np.array([[np.float32(cxx)], [np.float32(cyy)]])
-        corrected = kf.correct(measurement)
-        kf_x, kf_y = int(corrected[0]), int(corrected[1])
+        corrected   = kf.correct(measurement)
+        kf_x, kf_y  = int(corrected[0]), int(corrected[1])
+        last_kf_x, last_kf_y = kf_x, kf_y
+
+    else:
+        kf_lost_count += 1
+
+        if kf_initialized and kf_lost_count <= KF_LOST_MAX:
+            kf.statePost[2] *= 0.5
+            kf.statePost[3] *= 0.5
+            predicted = kf.predict()
+            kf_x, kf_y = int(predicted[0]), int(predicted[1])
+            last_kf_x, last_kf_y = kf_x, kf_y
+        else:
+            kf_initialized = False
+            kf_lost_count  = 0
+            # last_kf_x, last_kf_y 유지 → 마지막 위치 고정
 
     # ── FPS ──────────────────────────────────────────────────
     curr_time = cv2.getTickCount()
     fps = cv2.getTickFrequency() / (curr_time - prev_time)
     prev_time = curr_time
 
+    # ── 시각화 ───────────────────────────────────────────────
     cv2.drawMarker(display, CENTER, (255, 255, 0), cv2.MARKER_CROSS, 20, 2)
     cv2.putText(display, "Center", (CENTER[0]+8, CENTER[1]-8),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
@@ -163,34 +180,38 @@ while True:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
     if kf_initialized:
+        line_color   = (0, 255, 0)
+        circle_color = (0, 255, 0)
+    else:
+        line_color   = (100, 100, 100)
+        circle_color = (100, 100, 100)
+
+    ray_p      = pixel_to_ray(last_kf_x, last_kf_y)
+    yaw, pitch = angle_between(ray_center, ray_p)
+
+    if cxx is not None:
         color_raw = (0, 0, 255) if method == "BLOB" else (255, 0, 0)
-        color_kf  = (0, 255, 0)   # 칼만 결과는 초록색으로 구분
+        cv2.circle(display, (cxx, cyy), 1, color_raw, 1)
 
-        # 원시 검출점
-        if cxx is not None:
-            cv2.circle(display, (cxx, cyy), 1, color_raw, 1)
+    cv2.line(display, CENTER, (last_kf_x, last_kf_y), line_color, 1)
+    cv2.circle(display, (last_kf_x, last_kf_y), 1, circle_color, 1)
 
-        # 칼만 필터 결과
-        ray_p = pixel_to_ray(kf_x, kf_y)
-        yaw, pitch = angle_between(ray_center, ray_p)
+    status = "TRACKING" if kf_initialized else "LOST"
+    texts = [
+        f"status   : {status}",
+        f"method   : {method}",
+        f"Raw      : ({cxx}, {cyy})" if cxx is not None else "Raw      : (---, ---)",
+        f"Kalman   : ({last_kf_x}, {last_kf_y})",
+        f"Yaw      : {yaw:+.2f} deg",
+        f"Pitch    : {pitch:+.2f} deg",
+    ]
+    cv2.rectangle(display, (0, 395), (210, 495), (0, 0, 0), -1)
+    for i, t in enumerate(texts):
+        cv2.putText(display, t, (8, 410 + i * 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 180), 1)
 
-        cv2.line(display, CENTER, (kf_x, kf_y), color_kf, 1)
-        cv2.circle(display, (kf_x, kf_y), 1, color_kf, 1)
-
-        texts = [
-            f"method   : {method}",
-            f"Raw      : ({cxx}, {cyy})" if cxx is not None else "Raw      : (---, ---)",
-            f"Kalman   : ({kf_x}, {kf_y})",
-            f"Yaw      : {yaw:+.2f} deg",
-            f"Pitch    : {pitch:+.2f} deg",
-        ]
-        cv2.rectangle(display, (0, 410), (210, 480), (0, 0, 0), -1)
-        for i, t in enumerate(texts):
-            cv2.putText(display, t, (8, 424 + i * 14),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 180), 1)
-                        
-    #if kf_initialized and cxx is not None:   # 빛이 있을 때만
-        #servo.move(yaw, pitch)
+    # if kf_initialized and cxx is not None:
+    #     servo.move(yaw, pitch)
 
     cv2.imshow("Angle Viewer", display)
     if cv2.waitKey(1) & 0xFF == ord('q'):
