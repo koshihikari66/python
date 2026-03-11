@@ -4,7 +4,7 @@ import glob
 import os
 
 # 설정
-SAVE_DIR = "calib_images"
+SAVE_DIR = "ohter_calib_images"
 CHECKERBOARD = (8, 6)       # 내부 코너 수 (촬영 설정과 동일하게)
 SQUARE_SIZE = 25.0          # 체커보드 한 칸 실제 크기 (mm) ← 본인 체커보드에 맞게 수정
 IMAGE_SIZE = (640, 480)
