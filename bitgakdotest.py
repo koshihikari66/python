@@ -1,14 +1,13 @@
 import cv2
 import numpy as np
-#from sc import ServoController
+from sc import ServoController
 
-#servo = ServoController()
+servo = ServoController()
 
 fx = 655.0
 fy = 655.0
 cx = 325.0
 cy = 250.0
-prev_time = 0
 
 K = np.array([[fx,  0, cx],
               [ 0, fy, cy],
@@ -50,6 +49,24 @@ SHARP_RATIO        = 5.0    # 형광등·태양광 구별 강화
 BLOB_MIN_AREA      = 1
 BLOB_MAX_AREA      = 80
 FIXED_THRESHOLD    = 220    # 퍼센타일 대신 고정 임계값
+# ─────────────────────────────────────────────────────────────
+
+# ── [BUG 3 수정] SimpleBlobDetector 전역에서 한 번만 생성 ─────
+_blob_params = cv2.SimpleBlobDetector_Params()
+_blob_params.filterByArea        = True
+_blob_params.minArea             = BLOB_MIN_AREA
+_blob_params.maxArea             = BLOB_MAX_AREA
+_blob_params.filterByColor       = True
+_blob_params.blobColor           = 255
+_blob_params.filterByCircularity = True
+_blob_params.minCircularity      = 0.5
+_blob_params.filterByConvexity   = False
+_blob_params.filterByInertia     = True
+_blob_params.minInertiaRatio     = 0.4
+_blob_params.minThreshold        = 200
+_blob_params.maxThreshold        = 255
+_blob_params.thresholdStep       = 10
+blob_detector = cv2.SimpleBlobDetector_create(_blob_params)
 # ─────────────────────────────────────────────────────────────
 
 def pixel_to_ray(u, v):
@@ -148,22 +165,7 @@ def detect_laser(gray):
     # ── Step 3: 일반 Blob 검출 ────────────────────────────────
     _, bright = cv2.threshold(gray, FIXED_THRESHOLD, 255, cv2.THRESH_BINARY)
 
-    params = cv2.SimpleBlobDetector_Params()
-    params.filterByArea        = True
-    params.minArea             = BLOB_MIN_AREA
-    params.maxArea             = BLOB_MAX_AREA
-    params.filterByColor       = True
-    params.blobColor           = 255
-    params.filterByCircularity = True
-    params.minCircularity      = 0.5
-    params.filterByConvexity   = False
-    params.filterByInertia     = True
-    params.minInertiaRatio     = 0.4
-    params.minThreshold        = 200
-    params.maxThreshold        = 255
-    params.thresholdStep       = 10
-    detector = cv2.SimpleBlobDetector_create(params)
-    keypoints = detector.detect(bright)
+    keypoints = blob_detector.detect(bright)  # [BUG 3 수정] 전역 detector 사용
 
     for kp in keypoints:
         bx, by = int(kp.pt[0]), int(kp.pt[1])
@@ -200,6 +202,8 @@ cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
 
 ray_center = pixel_to_ray(*CENTER)
 cv2.namedWindow("Angle Viewer")
+
+prev_time = cv2.getTickCount()  # [BUG 1 수정] 0 대신 현재 틱으로 초기화
 
 while True:
     ret, frame = cap.read()
@@ -287,8 +291,8 @@ while True:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 180), 1)
 
     # ── 서보 제어 (필요 시 주석 해제) ────────────────────────
-    # if kf_initialized and cxx is not None:
-    #     servo.move(yaw, pitch)
+    if kf_initialized and cxx is not None:
+        servo.move(yaw, pitch)
 
     cv2.imshow("Angle Viewer", display)
     if cv2.waitKey(1) & 0xFF == ord('q'):

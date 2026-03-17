@@ -1,6 +1,7 @@
 import pigpio
 import time
 
+#################pin pin pin pin pin
 YAW_PIN   = 17
 PITCH_PIN = 27
 
@@ -8,11 +9,11 @@ PW_MIN  =  500
 PW_MID  = 1500
 PW_MAX  = 2500
 
-YAW_MIN,   YAW_MAX   = -90, 90
-PITCH_MIN, PITCH_MAX = -90, 90
+YAW_MIN,   YAW_MAX   = 0, 180
+PITCH_MIN, PITCH_MAX = 0, 180
 
 DEADBAND = 2
-STEP     = 2.0   # 고정 이동량
+STEP     = 1.0   # 고정 이동량
 
 class ServoController:
     def __init__(self, yaw_pin=YAW_PIN, pitch_pin=PITCH_PIN):
@@ -23,15 +24,15 @@ class ServoController:
         self.yaw_pin   = yaw_pin
         self.pitch_pin = pitch_pin
 
-        self.yaw_angle   = 0.0
-        self.pitch_angle = 0.0
+        self.yaw_angle   = 90.0
+        self.pitch_angle = 90.0
 
         self._set_pw(self.yaw_pin,   PW_MID)
         self._set_pw(self.pitch_pin, PW_MID)
         time.sleep(0.5)
 
     def _angle_to_pw(self, angle_deg):
-        pw = PW_MID + (angle_deg / 90.0) * (PW_MAX - PW_MID)
+        pw = PW_MID + (angle_deg / 180.0) * (PW_MAX - PW_MIN)
         return int(max(PW_MIN, min(PW_MAX, pw)))
 
     def _set_pw(self, pin, pw):
@@ -58,26 +59,10 @@ class ServoController:
             self.set_pitch(self.pitch_angle + step)
 
     def center(self):
-        self.set_yaw(0.0)
-        self.set_pitch(0.0)
+        self.set_yaw(90.0)
+        self.set_pitch(90.0)
 
     def stop(self):
         self._set_pw(self.yaw_pin,   0)
         self._set_pw(self.pitch_pin, 0)
         self.pi.stop()
-
-if __name__ == "__main__":
-    sc = ServoController()
-    print("중립 → 좌 → 우 → 중립 테스트")
-    try:
-        sc.center()
-        time.sleep(1)
-        sc.move(-45, 20)
-        time.sleep(1)
-        sc.move( 45,-20)
-        time.sleep(1)
-        sc.center()
-        time.sleep(1)
-    finally:
-        sc.stop()
-        print("완료")
