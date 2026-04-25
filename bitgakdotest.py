@@ -1,8 +1,8 @@
 import cv2
 import numpy as np
-from sc import ServoController
+#from sc import ServoController
 
-servo = ServoController()
+#servo = ServoController()
 
 fx = 655.0
 fy = 655.0
@@ -291,8 +291,8 @@ while True:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 180), 1)
 
     # ── 서보 제어 (필요 시 주석 해제) ────────────────────────
-    if kf_initialized and cxx is not None:
-        servo.move(yaw, pitch)
+#    if kf_initialized and cxx is not None:
+#        servo.move(yaw, pitch)
 
     cv2.imshow("Angle Viewer", display)
     if cv2.waitKey(1) & 0xFF == ord('q'):

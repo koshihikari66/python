@@ -50,7 +50,7 @@ def mouse_callback(event, x, y, flags, param):
 
 cap = cv2.VideoCapture(cv2.CAP_DSHOW+0)
 cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-cap.set(cv2.CAP_PROP_EXPOSURE, -6)
+cap.set(cv2.CAP_PROP_EXPOSURE, -3)
 cap.set(cv2.CAP_PROP_GAIN, 0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
