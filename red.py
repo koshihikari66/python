@@ -127,10 +127,6 @@ class LEDTrackerCA:
         self.miss_count  = 0
 
 def subpixel_centroid(gray: np.ndarray, mask: np.ndarray):
-    """
-    마스크 영역 내 밝기 값을 가중치로 사용해 무게중심(sub-pixel) 좌표를 계산.
-    반환: (cx, cy) float  /  검출 실패 시 None
-    """
     roi = gray.astype(np.float64)
     roi[mask == 0] = 0.0
 
@@ -192,7 +188,6 @@ def draw_results(frame: np.ndarray, detections: list,
         px, py, vx, vy, ax, ay = prediction
         ipx, ipy = int(round(px)), int(round(py))
 
-        # 예측 중심 (빨강 원 + 십자)
         cv2.drawMarker(vis, (ipx, ipy), (0, 0, 255),
                        cv2.MARKER_CROSS, markerSize=15, thickness=1,
                        line_type=cv2.LINE_AA)
