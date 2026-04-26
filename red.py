@@ -1,14 +1,18 @@
 import cv2
 import numpy as np
+import xy2angle
+#from scc import ServoController
+
+#servo = ServoController()
 
 # ── 파라미터 ──────────────────────────────────────────────
 CAM_ID       = 0
 WIDTH        = 640
 HEIGHT       = 480
 
-H_LOW1,  S_LOW1,  V_LOW1  =   0, 70, 100
+H_LOW1,  S_LOW1,  V_LOW1  =   0, 90, 100
 H_HIGH1, S_HIGH1, V_HIGH1 =  10, 255, 255
-H_LOW2,  S_LOW2,  V_LOW2  = 160, 70, 100
+H_LOW2,  S_LOW2,  V_LOW2  = 160, 90, 100
 H_HIGH2, S_HIGH2, V_HIGH2 = 180, 255, 255
 
 MIN_AREA   = 1      
@@ -206,7 +210,7 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
     cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-    cap.set(cv2.CAP_PROP_EXPOSURE, -4)
+    cap.set(cv2.CAP_PROP_EXPOSURE, -5)
     cap.set(cv2.CAP_PROP_GAIN, 0)
 
     if not cap.isOpened():
@@ -242,22 +246,32 @@ def main():
             cx, cy   = main_det['centroid']
             prediction = tracker.update(cx, cy)
 
+            """
             px, py, vx, vy, ax, ay = prediction
             print(f"[LED] meas=({cx:.4f},{cy:.4f})  "
                   f"pred=({px:.4f},{py:.4f})  "
                   f"v=({vx:.2f},{vy:.2f})  "
                   f"a=({ax:.2f},{ay:.2f})")
+            """
+
         else:
             if tracker.initialized:
                 remaining = tracker.max_missing - tracker.miss_count
                 prediction = tracker.predict_only()
+                """
                 if prediction is None:
                     print("[LED] 검출 실패 누적 한도 초과 → OUT")
                 else:
                     print(f"[LED] 검출 실패 — 칼만 예측 유지 "
                           f"({tracker.miss_count}/{tracker.max_missing}프레임)")
+                """
             else:
                 prediction = None
+
+        if prediction is not None:
+            yaw, pitch = xy2angle.pixel_to_angles(prediction[0], prediction[1])
+            print(f"yaw={yaw:.4f}    pitch={pitch:.4f}")
+            #servo.move(yaw, pitch)
 
         vis      = draw_results(frame, detections, prediction)
         mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
