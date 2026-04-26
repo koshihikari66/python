@@ -32,7 +32,7 @@ class ServoController:
         time.sleep(0.5)
 
     def _angle_to_pw(self, angle_deg):
-        pw = PW_MID + (angle_deg / 180.0) * (PW_MAX - PW_MIN)
+        pw = PW_MID + ((angle_deg-90) / 180.0) * (PW_MAX - PW_MIN)
         return int(max(PW_MIN, min(PW_MAX, pw)))
 
     def _set_pw(self, pin, pw):
