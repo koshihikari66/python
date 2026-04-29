@@ -284,7 +284,8 @@ def main():
         if key in (ord('q'), 27):
             break
 
-    servo.stop()
+################################################################
+    #servo.stop()
     cap.release()
     cv2.destroyAllWindows()
 
