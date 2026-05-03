@@ -7,6 +7,8 @@ cx: float = 325.0
 cy: float = 250.0
 # ─────────────────────────────────────────────────────────────
 
+def getfx():
+    return fx
 
 def pixel_to_angles(
     u: float,

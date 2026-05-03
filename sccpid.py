@@ -6,8 +6,8 @@ import time
 #servo.move(yaw_err, pitch_err, vx_kalman=vx, vy_kalman=vy)
  
 # ── 핀 설정 ────────────────────────────────────────────────
-YAW_PIN   = 17
-PITCH_PIN = 27
+YAW_PIN   = 23
+PITCH_PIN = 15
  
 PW_MIN  =  500
 PW_MID  = 1500
@@ -33,13 +33,13 @@ class PIDController:
  
     def __init__(
         self,
-        kp: float = 0.30,
+        kp: float = 0.3,
         ki: float = 0.01,
         kd: float = 0.05,
         dt: float = 1 / 30,
-        output_limit: float = 5.0,
-        integral_limit: float = 30.0,
-        deadband: float = 0.5,
+        output_limit: float = 4.0,
+        integral_limit: float = 20.0,
+        deadband: float = 1.0,
     ):
         self.kp = kp
         self.ki = ki
@@ -120,9 +120,9 @@ class ServoController:
         yaw_pin: int   = YAW_PIN,
         pitch_pin: int = PITCH_PIN,
         # PID 게인 — 실물 튜닝 시 여기서 조정
-        kp: float = 0.30,
-        ki: float = 0.01,
-        kd: float = 0.05,
+        kp: float = 0.23,
+        ki: float = 0.005,
+        kd: float = 0.01,
         dt: float = 1 / 30,
         output_limit: float   = 5.0,
         integral_limit: float = 30.0,
@@ -152,15 +152,15 @@ class ServoController:
         self._set_pw(self.pitch_pin, PW_MID)
         time.sleep(0.5)
  
-        print(
-            f"[ServoController] 초기화 완료 | "
-            f"Kp={kp}  Ki={ki}  Kd={kd}  dt={dt:.4f}s  "
-            f"limit=±{output_limit}°  deadband=±{deadband}°"
-        )
+        #print(
+        #    f"[ServoController] 초기화 완료 | "
+        #    f"Kp={kp}  Ki={ki}  Kd={kd}  dt={dt:.4f}s  "
+        #    f"limit=±{output_limit}°  deadband=±{deadband}°"
+        #)
  
     # ── 내부 헬퍼 ──────────────────────────────────────────
     def _angle_to_pw(self, angle_deg: float) -> int:
-        pw = PW_MID + ((angle_deg - 90) / 90.0) * ((PW_MAX - PW_MID))
+        pw = PW_MID + ((angle_deg - 90) / 180.0) * ((PW_MAX - PW_MIN))
         return int(max(PW_MIN, min(PW_MAX, pw)))
  
     def _set_pw(self, pin: int, pw: int):
@@ -194,7 +194,7 @@ class ServoController:
         yaw_cmd   = self.yaw_pid.compute(yaw_err,   velocity=vx_kalman)
         pitch_cmd = self.pitch_pid.compute(pitch_err, velocity=vy_kalman)
  
-        self.set_yaw(self.yaw_angle   + yaw_cmd)
+        self.set_yaw(self.yaw_angle - yaw_cmd)
         self.set_pitch(self.pitch_angle + pitch_cmd)
  
     # ── 유틸리티 ───────────────────────────────────────────
@@ -207,6 +207,8 @@ class ServoController:
  
     def stop(self):
         """PWM 신호 정지 및 pigpio 연결 해제."""
-        self._set_pw(self.yaw_pin,   0)
-        self._set_pw(self.pitch_pin, 0)
+        #self._set_pw(self.yaw_pin,   0)
+        #self._set_pw(self.pitch_pin, 0)
+        self.set_yaw(90.0)
+        self.set_pitch(90.0)
         self.pi.stop()
