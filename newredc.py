@@ -3,9 +3,9 @@ import numpy as np
 import xy2angle
 #sudo fuser -k /dev/video2
 
-from sccpid import ServoController
+#from sccpid import ServoController
 
-servo = ServoController()
+#servo = ServoController()
 
 # ── 파라미터 ──────────────────────────────────────────────
 CAM_ID       = 0
@@ -23,7 +23,7 @@ MAX_AREA   = 500
 # 0.0 : 순수 correction (현재 프레임 최적 추정)
 # 1.0 : 순수 prediction (다음 프레임 예측)
 # 서보 레이턴시가 크면 값을 올리세요 (권장 범위: 0.2 ~ 0.5)
-BLEND_ALPHA = 0.22
+BLEND_ALPHA = 0.2
 
 
 # ── 등가속 칼만 필터 (CA: Constant Acceleration) ─────────
@@ -143,6 +143,11 @@ class LEDTrackerCA:
         predicted = self.kf.predict()
         self.kf.statePost    = self.kf.statePre.copy()
         self.kf.errorCovPost = self.kf.errorCovPre.copy()
+
+        # ── 추가: 속도 확인 ──────────────────────
+        vx, vy = predicted[2, 0], predicted[3, 0]
+        print(f"[PREDICT_ONLY] miss={self.miss_count}  vx={vx:.3f}  vy={vy:.3f}")
+        # ─────────────────────────────────────────
         return self._unpack(predicted)
 
     @staticmethod
@@ -217,22 +222,22 @@ def draw_results(frame: np.ndarray, prediction: tuple):
 
 
 def main():
-    cap = cv2.VideoCapture(CAM_ID, cv2.CAP_V4L2)
+    cap = cv2.VideoCapture(CAM_ID)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
-    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-    cap.set(cv2.CAP_PROP_EXPOSURE, 0)
+    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
+    cap.set(cv2.CAP_PROP_EXPOSURE, -5)
     cap.set(cv2.CAP_PROP_GAIN, 0)
     if not cap.isOpened():
         print("카메라를 열 수 없습니다.")
         return
 
     tracker = LEDTrackerCA(
-        dt=1/30,
-        pos_noise=1e-2,
-        vel_noise=1e-2,
-        acc_noise=1e-1,
-        meas_noise=1e-1,
+        dt=1,
+        pos_noise=1e-1,
+        vel_noise=5,
+        acc_noise=1e-2,
+        meas_noise=0.3,
         max_missing=5,
         blend_alpha=BLEND_ALPHA,   # correction ↔ prediction 절충 비율
     )
@@ -270,10 +275,10 @@ def main():
             #print(f"yaw_err={yaw_err:.4f}    pitch_err={pitch_err:.4f}")
 
             # PID 서보 제어 — 칼만 속도(vx, vy)를 D항에 활용
-            # vx, vy -> angle velocity
-            vx=vx/xy2angle.getfx()
-            vy=vy/xy2angle.getfx()
-            servo.move(yaw_err, pitch_err, vx_kalman=vx, vy_kalman=vy)
+            # vx, vy -> angle velocity (vx, vy는 px/frame, px/frame × 30fps → rad/초)
+            vx=vx*30/xy2angle.getfx()
+            vy=vy*30/xy2angle.getfx()
+            #servo.move(yaw_err, pitch_err, vx_kalman=vx, vy_kalman=vy)
             #servo.move(yaw_err, pitch_err)
 
         vis      = draw_results(frame, prediction)
@@ -287,7 +292,7 @@ def main():
             break
 
 ################################################################
-    servo.stop()
+    #servo.stop()
     cap.release()
     cv2.destroyAllWindows()
 
