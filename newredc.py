@@ -141,6 +141,8 @@ class LEDTrackerCA:
             return None
 
         predicted = self.kf.predict()
+        self.kf.statePost    = self.kf.statePre.copy()
+        self.kf.errorCovPost = self.kf.errorCovPre.copy()
         return self._unpack(predicted)
 
     @staticmethod
@@ -170,7 +172,6 @@ def detect_red_led(frame: np.ndarray):
     kernel = np.ones((3,3), np.uint8)
     mask = cv2.dilate(mask, kernel, iterations=1)
 
-    # contour 검출
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     if not contours:
