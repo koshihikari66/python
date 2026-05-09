@@ -16,8 +16,8 @@ MAX_AREA = 500
 
 # 빨강 dominance threshold
 R_MIN      = 140
-RG_DIFF    = 50
-RB_DIFF    = 50
+RG_DIFF    = 90
+RB_DIFF    = 90
 
 # 0.0 : correction 중심
 # 1.0 : prediction 중심
@@ -134,8 +134,8 @@ class LEDTrackerCA:
 
         predicted = self.kf.predict()
 
-        self.kf.statePost    = self.kf.statePre.copy()
-        self.kf.errorCovPost = self.kf.errorCovPre.copy()
+        #self.kf.statePost    = self.kf.statePre.copy()
+        #self.kf.errorCovPost = self.kf.errorCovPre.copy()
 
         return self._unpack(predicted)
 
@@ -172,7 +172,6 @@ def detect_red_led(frame: np.ndarray):
         (r > b + RB_DIFF)
     ).astype(np.uint8) * 255
 
-    # Connected Components
     num_labels, labels, stats, centroids = \
         cv2.connectedComponentsWithStats(mask, connectivity=8)
 
@@ -212,7 +211,7 @@ def draw_results(frame: np.ndarray, prediction: tuple):
 
         ipx = int(round(px))
         ipy = int(round(py))
-
+        
         cv2.drawMarker(
             vis,
             (ipx, ipy),
@@ -222,7 +221,7 @@ def draw_results(frame: np.ndarray, prediction: tuple):
             thickness=1,
             line_type=cv2.LINE_AA
         )
-
+        
     return vis
 
 
@@ -289,17 +288,16 @@ def main():
 
             px, py, vx, vy, ax, ay = prediction
 
-            yaw_err, pitch_err = \
-                xy2angle.pixel_to_angles(px, py)
+            yaw_err, pitch_err = xy2angle.pixel_to_angles(px, py)
 
-            vx = vx * 30 / xy2angle.getfx()
-            vy = vy * 30 / xy2angle.getfx()
+            vx_a = vx * 30 / xy2angle.getfx()
+            vy_a = vy * 30 / xy2angle.getfx()
 
             # servo.move(
             #     yaw_err,
             #     pitch_err,
-            #     vx_kalman=vx,
-            #     vy_kalman=vy
+            #     vx_kalman=vx_a,
+            #     vy_kalman=vy_a
             # )
 
         # ── 디스플레이 ─────────────────────────────
