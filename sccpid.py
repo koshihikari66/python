@@ -1,5 +1,6 @@
 import pigpio
 import time
+import numpy as np
 
 #px, py, vx, vy, ax, ay = prediction
 #yaw_err, pitch_err = xy2angle.pixel_to_angles(px, py)
@@ -82,7 +83,7 @@ class PIDController:
         i = self.ki * self._integral
  
         # D항: 칼만 속도가 있으면 활용, 없으면 오차 미분
-        if velocity != 0.0:
+        if abs(velocity) > 1e-6:
             d = -self.kd * velocity          # 속도 방향과 반대로 감쇠
         else:
             d = self.kd * (error - self._prev_error) / self.dt
@@ -122,7 +123,7 @@ class ServoController:
         # PID 게인 — 실물 튜닝 시 여기서 조정
         kp: float = 0.23,
         ki: float = 0.005,
-        kd: float = 0.01,
+        kd: float = 0.01*np.pi/180,
         dt: float = 1 / 30,
         output_limit: float   = 5.0,
         integral_limit: float = 30.0,

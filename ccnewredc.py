@@ -252,6 +252,7 @@ def main():
         blend_alpha=BLEND_ALPHA,
     )
 
+    mask = np.zeros((HEIGHT,WIDTH), dtype=np.uint8)
     prediction = None
 
     while True:
@@ -290,8 +291,8 @@ def main():
 
             yaw_err, pitch_err = xy2angle.pixel_to_angles(px, py)
 
-            vx_a = vx * 30 / xy2angle.getfx()
-            vy_a = vy * 30 / xy2angle.getfx()
+            vx_a = vx * (180/np.pi) * 30 / xy2angle.getfx()
+            vy_a = vy * (180/np.pi) * 30 / xy2angle.getfx()
 
             # servo.move(
             #     yaw_err,
