@@ -276,9 +276,9 @@ def main():
 
             # PID 서보 제어 — 칼만 속도(vx, vy)를 D항에 활용
             # vx, vy -> angle velocity (vx, vy는 px/frame, px/frame × 30fps → rad/초)
-            vx=vx*30/xy2angle.getfx()
-            vy=vy*30/xy2angle.getfx()
-            #servo.move(yaw_err, pitch_err, vx_kalman=vx, vy_kalman=vy)
+            vx_a = vx * (180/np.pi) * 30 / xy2angle.getfx()
+            vy_a = vy * (180/np.pi) * 30 / xy2angle.getfx()
+            #servo.move(yaw_err, pitch_err, vx_kalman=vx_a, vy_kalman=vy_a)
             #servo.move(yaw_err, pitch_err)
 
         vis      = draw_results(frame, prediction)
