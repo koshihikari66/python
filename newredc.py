@@ -225,7 +225,7 @@ def main():
     cap = cv2.VideoCapture(CAM_ID)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
-    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0)
+    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
     cap.set(cv2.CAP_PROP_EXPOSURE, -5)
     cap.set(cv2.CAP_PROP_GAIN, 0)
     if not cap.isOpened():
