@@ -18,9 +18,9 @@ H_HIGH2, S_HIGH2, V_HIGH2 = 180, 255, 255
 MIN_AREA   = 1
 MAX_AREA   = 500
 
-# 0.0 : 순수 correction (현재 프레임 최적 추정)
-# 1.0 : 순수 prediction (다음 프레임 예측)
-# 카메라가 움직이는 환경에서는 0.3~0.5 권장
+# 0.0 : 순수 correction
+# 1.0 : 순수 prediction
+# 카메라가 움직이는 환경: 0.3~0.5 권장
 BLEND_ALPHA = 0.3
 
 
@@ -30,15 +30,13 @@ class LEDTrackerCA:
     상태 벡터: [yaw_world, pitch_world, ω_yaw, ω_pitch, α_yaw, α_pitch]
     측정 벡터: [yaw_world, pitch_world]
 
-    픽셀이 아닌 월드 각도 공간에서 추적하므로,
-    카메라(서보)가 움직여도 정지한 LED의 상태값이 변하지 않습니다.
-
-    월드 각도 = 현재 서보 각도 + 픽셀→상대각도(xy2angle)
+    월드 각도 = servo.actual_yaw + yaw_rel (1차 지연 모델 적용)
 
     수정 이력:
-    - 월드 각도 공간으로 전환 (픽셀 기반 → 각도 기반)
-    - dt=1/30 으로 실제 초 단위 사용
-    - _was_missing 플래그로 복귀 첫 프레임 이중예측(double prediction) 버그 수정
+    - 월드 각도 공간으로 전환
+    - dt=1/30 실제 초 단위 사용
+    - _was_missing 플래그로 복귀 첫 프레임 이중예측 버그 수정
+    - servo.actual_yaw 사용으로 명령값-실제값 오염 제거
     """
 
     def __init__(self, dt: float = 1/30,
@@ -54,7 +52,7 @@ class LEDTrackerCA:
         self.max_missing  = max_missing
         self.miss_count   = 0
         self.blend_alpha  = blend_alpha
-        self._was_missing = False   # 복귀 첫 프레임 이중예측 방지 플래그
+        self._was_missing = False
 
         dt2 = 0.5 * dt ** 2
         self.kf.transitionMatrix = np.array([
@@ -86,13 +84,10 @@ class LEDTrackerCA:
         """
         월드 각도 측정값으로 predict → correct 처리.
 
-        복귀 첫 프레임(_was_missing=True)에서는 predict()를 생략한다.
-        predict_only()에서 이미 statePost가 최신 예측값이므로
-        여기서 한 번 더 predict()하면 이중예측이 발생하기 때문.
+        복귀 첫 프레임(_was_missing=True)은 predict() 생략.
+        statePost가 이미 최신 예측값이므로 이중예측 방지.
 
         반환: (pred_yaw, pred_pitch, ω_yaw, ω_pitch, α_yaw, α_pitch)
-          - pred_yaw/pitch : correction과 next_prediction을 α로 보간한 월드 각도
-          - ω_yaw, ω_pitch : correction 기준 각속도 [deg/s] (PID D항에 사용)
         """
         measurement = np.array([[yaw_world], [pitch_world]], dtype=np.float32)
 
@@ -106,8 +101,6 @@ class LEDTrackerCA:
 
         self.miss_count = 0
 
-        # 복귀 첫 프레임: statePost가 이미 최신 예측값 → predict 생략
-        # 정상 프레임: predict → correct 순서
         if not self._was_missing:
             self.kf.predict()
         self._was_missing = False
@@ -126,8 +119,8 @@ class LEDTrackerCA:
 
         return (
             byaw, bpitch,
-            corrected[2, 0],   # ω_yaw   — correction 기준 각속도 [deg/s]
-            corrected[3, 0],   # ω_pitch — correction 기준 각속도 [deg/s]
+            corrected[2, 0],   # ω_yaw   [deg/s]
+            corrected[3, 0],   # ω_pitch [deg/s]
             corrected[4, 0],   # α_yaw
             corrected[5, 0],   # α_pitch
         )
@@ -135,11 +128,9 @@ class LEDTrackerCA:
     def predict_only(self):
         """
         검출 실패 시 호출. 예측만 수행하고 miss_count 증가.
-        max_missing 초과 시 트래커를 초기화하고 None 반환.
-
-        statePost = statePre 로 복사하여 연속 miss 시 체이닝이 올바르게 동작.
-        _was_missing 플래그를 True로 설정하여 복귀 첫 프레임의
-        이중예측을 방지한다.
+        max_missing 초과 시 트래커 초기화 후 None 반환.
+        statePost = statePre 복사로 연속 miss 체이닝 유지.
+        _was_missing = True 로 복귀 첫 프레임 이중예측 방지.
         """
         self.miss_count += 1
         if self.miss_count > self.max_missing:
@@ -147,7 +138,7 @@ class LEDTrackerCA:
             return None
 
         predicted = self.kf.predict()
-        self.kf.statePost    = self.kf.statePre.copy()   # 연속 miss 체이닝용
+        self.kf.statePost    = self.kf.statePre.copy()
         self.kf.errorCovPost = self.kf.errorCovPre.copy()
         self._was_missing    = True
 
@@ -211,10 +202,6 @@ def detect_red_led(frame: np.ndarray):
 
 
 def draw_results(frame: np.ndarray, prediction: tuple):
-    """
-    서보가 현재 바라보는 방향(화면 중심)에 조준 마커 표시.
-    prediction이 있으면 흰색, 없으면 표시 안 함.
-    """
     vis = frame.copy()
 
     if prediction is not None:
@@ -248,13 +235,18 @@ def main():
     )
     prediction = None
 
-    # 서보 초기 각도 (servo 객체 없을 때 시뮬레이션용)
-    servo_yaw   = 90.0
-    servo_pitch = 90.0
+    # ── servo 객체 없을 때 시뮬레이션용 ──────────────────
+    # servo 사용 시 아래 블록 전체를 삭제하고
+    # servo = ServoController() 주석 해제
+    class _DummyServo:
+        actual_yaw   = 90.0
+        actual_pitch = 90.0
+    servo = _DummyServo()
+    # ─────────────────────────────────────────────────────
 
-    print("  빨간 LED 서브픽셀 검출기 + CA 칼만 필터 (월드 각도 공간)")
-    print(f"  blend_alpha={BLEND_ALPHA}  (0=correction, 1=prediction)")
-    print(f"  검출 실패 허용: {tracker.max_missing}프레임")
+    print("  빨간 LED 서브픽셀 검출기 + CA 칼만 필터")
+    print("  (월드 각도 공간 | 1차 지연 모델 적용)")
+    print(f"  blend_alpha={BLEND_ALPHA}  검출 실패 허용: {tracker.max_missing}프레임")
     print("  q / ESC : 종료")
 
     while True:
@@ -265,10 +257,11 @@ def main():
 
         detections, mask = detect_red_led(frame)
 
-        # ── 현재 서보 각도 읽기 ─────────────────────────────
-        # servo 객체 사용 시 아래 두 줄로 교체:
-        # servo_yaw   = servo.yaw_angle
-        # servo_pitch = servo.pitch_angle
+        # ── 1차 지연 모델 기반 추정 실제 서보 위치 ────────
+        # 명령값(yaw_angle)이 아닌 추정 실제값(actual_yaw)을 사용
+        # → 명령-실제 간 차이로 인한 월드각 오염 방지
+        servo_yaw   = servo.actual_yaw
+        servo_pitch = servo.actual_pitch
 
         if detections:
             main_det = max(detections, key=lambda d: d['area'])
@@ -277,7 +270,7 @@ def main():
             # 픽셀 → 카메라 기준 상대 각도
             yaw_rel, pitch_rel = xy2angle.pixel_to_angles(px, py)
 
-            # 카메라 기준 상대각 → 월드 각도
+            # 추정 실제 서보 위치 기준 월드 각도
             yaw_world   = servo_yaw   + yaw_rel
             pitch_world = servo_pitch + pitch_rel
 
@@ -292,14 +285,13 @@ def main():
         if prediction is not None:
             pred_yaw_w, pred_pitch_w, omega_yaw, omega_pitch, _, _ = prediction
 
-            # 서보 오차 = 예측된 월드 각도 - 현재 서보 각도
+            # 서보 오차 = 예측된 월드 각도 - 추정 실제 서보 각도
             yaw_err   = pred_yaw_w   - servo_yaw
             pitch_err = pred_pitch_w - servo_pitch
 
-            #print(f"yaw_err={yaw_err:.3f}  pitch_err={pitch_err:.3f}  "
-            #      f"ω_yaw={omega_yaw:.3f}  ω_pitch={omega_pitch:.3f}")
+            print(f"yaw_err={yaw_err:.3f}  pitch_err={pitch_err:.3f}  "
+                  f"ω_yaw={omega_yaw:.3f}  ω_pitch={omega_pitch:.3f}")
 
-            # 각속도를 D항에 직접 사용 (deg/s 단위)
             # servo.move(yaw_err, pitch_err,
             #            vx_kalman=omega_yaw, vy_kalman=omega_pitch)
 
