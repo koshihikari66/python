@@ -2,36 +2,25 @@ import pigpio
 import time
 import numpy as np
 
-#px, py, vx, vy, ax, ay = prediction
-#yaw_err, pitch_err = xy2angle.pixel_to_angles(px, py)
-#servo.move(yaw_err, pitch_err, vx_kalman=vx, vy_kalman=vy)
- 
 # ── 핀 설정 ────────────────────────────────────────────────
 YAW_PIN   = 23
 PITCH_PIN = 15
- 
+
 PW_MIN  =  500
 PW_MID  = 1500
 PW_MAX  = 2500
- 
+
 YAW_MIN,   YAW_MAX   = 0, 180
 PITCH_MIN, PITCH_MAX = 0, 180
- 
- 
+
+
 # ── PID 컨트롤러 ───────────────────────────────────────────
 class PIDController:
     """
     단일 축 PID 컨트롤러.
- 
-    Parameters
-    ----------
-    kp, ki, kd   : PID 게인
-    dt           : 제어 주기 (초). red.py 루프 주기와 맞춰주세요.
-    output_limit : 한 스텝당 최대 각도 변화량 [deg] (포화 방지)
-    integral_limit: 적분 와인드업 방지 한계값
-    deadband     : 이 범위 내의 오차는 0으로 처리 (채터링 억제)
+    D항은 오차 차분 기반 + LPF 적용.
     """
- 
+
     def __init__(
         self,
         kp: float = 0.3,
@@ -46,14 +35,17 @@ class PIDController:
         self.ki = ki
         self.kd = kd
         self.dt = dt
+
         self.output_limit   = output_limit
         self.integral_limit = integral_limit
         self.deadband       = deadband
- 
-        self._integral  = 0.0
-        self._prev_error = 0.0
- 
-    def compute(self, error: float, velocity: float = 0.0) -> float:
+
+
+        self._integral    = 0.0
+        self._prev_error  = 0.0
+        self._d_filtered  = 0.0
+
+    def compute(self, error: float, velocity: float = 0.0, use_d: bool=True) -> float:
         """
         PID 출력 계산.
  
@@ -83,106 +75,131 @@ class PIDController:
         i = self.ki * self._integral
  
         # D항: 칼만 속도가 있으면 활용, 없으면 오차 미분
-        if abs(velocity) > 1e-6:
-            d = self.kd * velocity          # 속도 방향과 반대로 감쇠
+        if not use_d:
+            d = 0.0
+        elif abs(velocity) > 1e-6:
+            d = -self.kd * velocity
         else:
             d = self.kd * (error - self._prev_error) / self.dt
  
         self._prev_error = error
  
         output = p + i + d
+        
         return max(-self.output_limit, min(self.output_limit, output))
- 
+
     def reset(self):
         self._integral   = 0.0
         self._prev_error = 0.0
- 
- 
-# ── 서보 컨트롤러 (PID) ────────────────────────────────────
+        self._d_filtered = 0.0
+
+
+# ── 서보 컨트롤러 ─────────────────────────────────────────
 class ServoController:
     """
     YAW / PITCH 독립 PID 제어 서보 컨트롤러.
- 
-    move(yaw_err, pitch_err) 호출 시 오차 [deg] 를 받아
-    PID 출력만큼 서보를 움직입니다.
- 
-    칼만 필터의 속도 추정값(vx, vy)을 선택적으로 전달하면
-    D항을 칼만 속도로 대체하여 더 부드러운 제어가 됩니다.
- 
-    사용 예 (red.py):
-        prediction = tracker.update(cx, cy)
-        px, py, vx, vy, ax, ay = prediction
-        yaw_err, pitch_err = xy2angle.pixel_to_angles(px, py)
-        servo.move(yaw_err, pitch_err, vx_kalman=vx, vy_kalman=vy)
     """
- 
+
     def __init__(
         self,
         yaw_pin: int   = YAW_PIN,
         pitch_pin: int = PITCH_PIN,
-        # PID 게인 — 실물 튜닝 시 여기서 조정
-        kp: float = 0.23,
-        ki: float = 0.005,
-        kd: float = 0.8*np.pi/180,
+
+        # 추천 초기값
+        kp: float = 1.5,
+        ki: float = 0.0,
+        kd: float = 0.18,
+
         dt: float = 1 / 30,
+
         output_limit: float   = 5.0,
         integral_limit: float = 30.0,
-        deadband: float       = 0.5,
+        deadband: float       = 0.7,
+
+        # 서보 명령 EMA 스무딩 (0=즉시반응, 1=변화없음)
+        # 1-3프레임 주기 검출 진동 억제용 (권장: 0.5~0.7)
+        cmd_smooth: float     = 0.08,
     ):
         self.pi = pigpio.pi()
+
         if not self.pi.connected:
-            raise RuntimeError("pigpiod가 실행 중이 아닙니다. 'sudo pigpiod'를 먼저 실행하세요.")
- 
+            raise RuntimeError(
+                "pigpiod가 실행 중이 아닙니다. "
+                "'sudo pigpiod'를 먼저 실행하세요."
+            )
+
         self.yaw_pin   = yaw_pin
         self.pitch_pin = pitch_pin
- 
+
         self.yaw_angle   = 90.0
         self.pitch_angle = 90.0
- 
+
+        # EMA 스무딩 상태
+        self.cmd_smooth    = cmd_smooth
+        self._smooth_yaw   = 90.0
+        self._smooth_pitch = 90.0
+
         pid_kwargs = dict(
-            kp=kp, ki=ki, kd=kd,
+            kp=kp,
+            ki=ki,
+            kd=kd,
             dt=dt,
+
             output_limit=output_limit,
             integral_limit=integral_limit,
-            deadband=deadband,
+            deadband=deadband
         )
+
         self.yaw_pid   = PIDController(**pid_kwargs)
         self.pitch_pid = PIDController(**pid_kwargs)
- 
+
         self._set_pw(self.yaw_pin,   PW_MID)
         self._set_pw(self.pitch_pin, PW_MID)
+
         time.sleep(0.5)
- 
-        #print(
-        #    f"[ServoController] 초기화 완료 | "
-        #    f"Kp={kp}  Ki={ki}  Kd={kd}  dt={dt:.4f}s  "
-        #    f"limit=±{output_limit}°  deadband=±{deadband}°"
-        #)
- 
+
     # ── 내부 헬퍼 ──────────────────────────────────────────
     def _angle_to_pw(self, angle_deg: float) -> int:
-        pw = PW_MID + ((angle_deg - 90) / 180.0) * ((PW_MAX - PW_MIN))
-        return int(max(PW_MIN, min(PW_MAX, pw)))
- 
+        pw = PW_MID + ((angle_deg - 90) / 180.0) * (PW_MAX - PW_MIN)
+
+        return int(
+            max(PW_MIN, min(PW_MAX, pw))
+        )
+
     def _set_pw(self, pin: int, pw: int):
         self.pi.set_servo_pulsewidth(pin, pw)
- 
-    # ── 단축 각도 설정 ─────────────────────────────────────
+
+    # ── 각도 설정 ─────────────────────────────────────────
     def set_yaw(self, angle_deg: float):
-        self.yaw_angle = max(YAW_MIN, min(YAW_MAX, angle_deg))
-        self._set_pw(self.yaw_pin, self._angle_to_pw(self.yaw_angle))
- 
+        self.yaw_angle = max(
+            YAW_MIN,
+            min(YAW_MAX, angle_deg)
+        )
+
+        self._set_pw(
+            self.yaw_pin,
+            self._angle_to_pw(self.yaw_angle)
+        )
+
     def set_pitch(self, angle_deg: float):
-        self.pitch_angle = max(PITCH_MIN, min(PITCH_MAX, angle_deg))
-        self._set_pw(self.pitch_pin, self._angle_to_pw(self.pitch_angle))
- 
-    # ── 메인 제어 인터페이스 ───────────────────────────────
+        self.pitch_angle = max(
+            PITCH_MIN,
+            min(PITCH_MAX, angle_deg)
+        )
+
+        self._set_pw(
+            self.pitch_pin,
+            self._angle_to_pw(self.pitch_angle)
+        )
+
+    # ── 메인 제어 ─────────────────────────────────────────
     def move(
         self,
         yaw_err: float,
         pitch_err: float,
         vx_kalman: float = 0.0,
         vy_kalman: float = 0.0,
+        use_d : bool=True
     ):
         """
         Parameters
@@ -192,27 +209,37 @@ class ServoController:
         vx_kalman : 칼만 추정 x 속도 [px/frame] (선택)
         vy_kalman : 칼만 추정 y 속도 [px/frame] (선택)
         """
-        yaw_cmd   = self.yaw_pid.compute(yaw_err,   velocity=vx_kalman)
-        pitch_cmd = self.pitch_pid.compute(pitch_err, velocity=vy_kalman)
- 
-        self.set_yaw(self.yaw_angle - yaw_cmd)
-        self.set_pitch(self.pitch_angle + pitch_cmd)
- 
-    # ── 유틸리티 ───────────────────────────────────────────
+        yaw_cmd   = self.yaw_pid.compute(yaw_err,   velocity=vx_kalman, use_d=use_d)
+        pitch_cmd = self.pitch_pid.compute(pitch_err, velocity=vy_kalman, use_d=use_d)
+
+        raw_yaw   = self.yaw_angle   - yaw_cmd
+        raw_pitch = self.pitch_angle + pitch_cmd
+
+        # EMA 스무딩: 급격한 방향 전환 억제
+        self._smooth_yaw   = (1 - self.cmd_smooth) * raw_yaw   + self.cmd_smooth * self._smooth_yaw
+        self._smooth_pitch = (1 - self.cmd_smooth) * raw_pitch + self.cmd_smooth * self._smooth_pitch
+
+        self.set_yaw(self._smooth_yaw)
+        self.set_pitch(self._smooth_pitch)
+
+    # ── 유틸리티 ──────────────────────────────────────────
     def center(self):
-        """서보를 중앙(90°)으로 복귀하고 PID 상태 초기화."""
         self.yaw_pid.reset()
         self.pitch_pid.reset()
+
         self.set_yaw(90.0)
         self.set_pitch(90.0)
- 
+
+        self._smooth_yaw   = 90.0
+        self._smooth_pitch = 90.0
+
     def stop(self):
-        """PWM 신호 정지 및 pigpio 연결 해제."""
-        #self._set_pw(self.yaw_pin,   0)
-        #self._set_pw(self.pitch_pin, 0)
         self.set_yaw(90.0)
         self.set_pitch(90.0)
+
         time.sleep(1)
-        self._set_pw(YAW_PIN,0)
-        self._set_pw(PITCH_PIN,0)
+
+        self._set_pw(YAW_PIN, 0)
+        self._set_pw(PITCH_PIN, 0)
+
         self.pi.stop()

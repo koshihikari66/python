@@ -3,8 +3,8 @@ import numpy as np
 import threading
 import xy2angle
 # sudo fuser -k /dev/video2
-from sccpid import ServoController
-servo = ServoController()
+# from sccpid import ServoController
+# servo = ServoController()
 
 from flask import Flask, Response
 
@@ -269,11 +269,11 @@ def draw_results(frame: np.ndarray, prediction: tuple):
 
 
 def main():
-    cap = cv2.VideoCapture(CAM_ID, cv2.CAP_V4L2)
+    cap = cv2.VideoCapture(CAM_ID)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
-    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)
-    cap.set(cv2.CAP_PROP_EXPOSURE, 0)
+    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+    cap.set(cv2.CAP_PROP_EXPOSURE, -5)
     cap.set(cv2.CAP_PROP_GAIN, 0)
     if not cap.isOpened():
         print("카메라를 열 수 없습니다.")
@@ -290,6 +290,9 @@ def main():
     )
     prediction = None
 
+    # 서보 초기 각도 (servo 객체 없을 때 시뮬레이션용)
+    servo_yaw   = 90.0
+    servo_pitch = 90.0
 
     print("  빨간 LED 서브픽셀 검출기 + CA 칼만 필터 (월드 각도 공간)")
     print(f"  blend_alpha={BLEND_ALPHA}  (0=correction, 1=prediction)")
@@ -306,8 +309,8 @@ def main():
 
         # ── 현재 서보 각도 읽기 ─────────────────────────────
         # servo 객체 사용 시 아래 두 줄로 교체:
-        servo_yaw   = servo.yaw_angle
-        servo_pitch = servo.pitch_angle
+        # servo_yaw   = servo.yaw_angle
+        # servo_pitch = servo.pitch_angle
 
         if detections:
             main_det = max(detections, key=lambda d: d['area'])
@@ -339,8 +342,8 @@ def main():
             #      f"ω_yaw={omega_yaw:.3f}  ω_pitch={omega_pitch:.3f}")
 
             # 각속도를 D항에 직접 사용 (deg/s 단위)
-            servo.move(yaw_err, pitch_err,
-                       vx_kalman=omega_yaw, vy_kalman=omega_pitch)
+            # servo.move(yaw_err, pitch_err,
+            #            vx_kalman=omega_yaw, vy_kalman=omega_pitch)
 
         vis      = draw_results(frame, prediction)
         mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
@@ -358,7 +361,7 @@ def main():
         # if key in (ord('q'), 27):
         #     break
 
-    servo.stop()
+    # servo.stop()
     cap.release()
     # cv2.destroyAllWindows()
 
