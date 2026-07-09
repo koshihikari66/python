@@ -314,6 +314,11 @@ class ServoController:
         # 현재 추정각 기준으로 다음 명령각 계산
         raw_yaw   = self.yaw_angle   - yaw_cmd_delta
         raw_pitch = self.pitch_angle + pitch_cmd_delta
+        
+        print(
+        #f"ERR=({yaw_err:6.2f},{pitch_err:6.2f}) | "
+        f"PID=({yaw_cmd_delta:6.2f},{pitch_cmd_delta:6.2f}) | "
+        )
 
         # EMA 스무딩: 급격한 방향 전환 억제
         # self._smooth_*는 명령각 스무딩 상태이다.

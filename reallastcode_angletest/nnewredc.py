@@ -292,7 +292,7 @@ class LEDTrackerCA:
         이중예측을 방지한다.
         """
         self.miss_count += 1
-        print(self.miss_count)
+        #print(self.miss_count)
         if self.miss_count > self.max_missing:
             self.reset()
             return None
@@ -580,6 +580,10 @@ def main():
 
                 yaw_err   = pred_yaw_w   + servo_yaw
                 pitch_err = pred_pitch_w - servo_pitch
+                
+                print(f"W=({pred_yaw_w:7.2f}, {pred_pitch_w:7.2f}) | "
+                f"Target=({yaw_err:7.2f}, {pitch_err:7.2f}) | "
+                f"Servo=({servo_yaw:7.2f}, {servo_pitch:7.2f})")
 
                 if in_predict_only:
                     servo.move(yaw_err, pitch_err, use_d=False)
