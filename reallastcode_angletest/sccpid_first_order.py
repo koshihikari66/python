@@ -1,15 +1,48 @@
-import pigpio
 import time
 import math
 import numpy as np
+from rpi_hardware_pwm import HardwarePWM
 
-# ── 핀 설정 ────────────────────────────────────────────────
-YAW_PIN   = 23
-PITCH_PIN = 15
+# ── PWM(하드웨어) 설정 ─────────────────────────────────────
+# pigpio(소프트웨어 PWM) → 라즈베리파이 hardware PWM(sysfs, pwm_bcm2835/rp1)으로 전환.
+#
+# 하드웨어 PWM은 pigpio처럼 아무 GPIO나 쓸 수 없고, 정해진 PWM 채널에
+# 매핑된 GPIO에서만 동작한다. 따라서 "핀 번호" 대신 "PWM 칩/채널"로
+# 축을 구분한다. dtoverlay=pwm-2chan 사용 시 기본 매핑은 다음과 같다.
+#
+#   PWM chip 0, channel 0 → GPIO18  (YAW)
+#   PWM chip 0, channel 1 → GPIO19  (PITCH)
+#
+# ※ Raspberry Pi 5는 RP1 칩 구조가 달라 보통 chip=2를 사용한다.
+#   (rpi-hardware-pwm 라이브러리 기준: Pi 1/2/3/4 → chip=0, Pi 5 → chip=2)
+#   보드에 맞게 PWM_CHIP 값만 바꾸면 되고, nnewredc.py는 수정할 필요 없다.
+#
+# 사전 준비 (최초 1회, 재부팅 필요):
+#   1) sudo pip3 install rpi-hardware-pwm  (또는 --break-system-packages)
+#   2) /boot/firmware/config.txt (구버전은 /boot/config.txt)에 아래 한 줄 추가
+#        dtoverlay=pwm-2chan
+#      GPIO12/13을 쓰고 싶다면:
+#        dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4
+#   3) sudo reboot
+#   4) lsmod | grep pwm 으로 pwm_bcm2835(또는 관련 모듈) 로드 확인
+PWM_FREQ_HZ = 330.0  # 서보 동작 주파수 (요청 사양)
 
-PW_MIN  =  500
-PW_MID  = 1500
-PW_MAX  = 2500
+YAW_PWM_CHANNEL   = 0   # dtoverlay=pwm-2chan 기본값 기준 GPIO18
+PITCH_PWM_CHANNEL = 1   # dtoverlay=pwm-2chan 기본값 기준 GPIO19
+PWM_CHIP          = 0   # Pi 1/2/3/4 = 0, Pi 5 = 2 (보드에 맞게 수정)
+
+# 참고용 GPIO 번호 (로그/디버깅 표시용. 실제 제어는 PWM chip/channel로 이루어짐)
+YAW_PIN   = 18
+PITCH_PIN = 19
+
+
+# 중립(90도) 펄스폭을 1520us로 캘리브레이션 (요청 사양: 1520us / 330Hz).
+# PW_MIN/PW_MAX도 PW_MID와 함께 +20us 시프트해서 중심 기준 ±1000us
+# 대칭 범위를 그대로 유지한다 (그래야 _angle_to_pw()의 선형 매핑이
+# 0~180도 전 구간에서 클램핑 없이 대칭적으로 동작한다).
+PW_MIN  =  520
+PW_MID  = 1520
+PW_MAX  = 2520
 
 YAW_MIN,   YAW_MAX   = 0, 180
 PITCH_MIN, PITCH_MAX = 90, 180
@@ -125,12 +158,27 @@ class ServoController:
     - 두 축의 기구(서보 종류, 부하, 마찰 등) 특성이 다르면 이제
       각각 다른 값을 넣어 따로 조정하면 된다. (dt는 두 축이 같은
       제어 루프 주기를 쓰므로 공통 파라미터로 유지)
+
+    PWM 백엔드:
+    - pigpio(소프트웨어 PWM, DMA 기반) 대신 라즈베리파이 hardware PWM
+      (rpi-hardware-pwm, sysfs 기반)을 사용한다.
+    - 서보는 330Hz로 동작하며, 각도→펄스폭[us] 매핑(_angle_to_pw)은
+      기존과 동일하게 유지하고, 마지막 단계에서만 duty cycle[%]로
+      변환해 하드웨어에 내보낸다. 즉 nnewredc.py 입장에서는 servo.move(),
+      servo.yaw_angle/pitch_angle, servo.stop() 등 인터페이스가 전혀
+      바뀌지 않는다.
     """
 
     def __init__(
         self,
         yaw_pin: int   = YAW_PIN,
         pitch_pin: int = PITCH_PIN,
+
+        # ── hardware PWM 설정 (필요 시에만 오버라이드) ─────
+        pwm_freq: float         = PWM_FREQ_HZ,
+        pwm_chip: int           = PWM_CHIP,
+        yaw_pwm_channel: int    = YAW_PWM_CHANNEL,
+        pitch_pwm_channel: int  = PITCH_PWM_CHANNEL,
 
         # ── YAW 축 PID 게인 ────────────────────────────────
         yaw_kp: float = 1.1,
@@ -170,18 +218,36 @@ class ServoController:
         home_step_deg: float   = 5.0,
         home_step_delay: float = 0.06,
     ):
-        self.pi = pigpio.pi()
-
-        if not self.pi.connected:
-            raise RuntimeError(
-                "pigpiod가 실행 중이 아닙니다. "
-                "'sudo pigpiod'를 먼저 실행하세요."
-            )
-
         self.yaw_pin   = yaw_pin
         self.pitch_pin = pitch_pin
 
         self.dt = dt
+
+        # ── hardware PWM 채널 초기화 ────────────────────────
+        # duty cycle 변환에 필요한 PWM 주기[us] (330Hz → 약 3030.3us)
+        self._pwm_freq  = pwm_freq
+        self._period_us = 1_000_000.0 / self._pwm_freq
+
+        try:
+            self.yaw_pwm = HardwarePWM(
+                pwm_channel=yaw_pwm_channel, hz=pwm_freq, chip=pwm_chip
+            )
+            self.pitch_pwm = HardwarePWM(
+                pwm_channel=pitch_pwm_channel, hz=pwm_freq, chip=pwm_chip
+            )
+        except Exception as e:
+            raise RuntimeError(
+                "라즈베리파이 hardware PWM 초기화에 실패했습니다. "
+                "'/boot/firmware/config.txt'(구버전은 /boot/config.txt)에 "
+                "'dtoverlay=pwm-2chan'을 추가하고 재부팅했는지, "
+                "'sudo pip3 install rpi-hardware-pwm'이 설치되어 있는지, "
+                "pwm_chip 값이 보드(Pi 4 이하=0, Pi 5=2)에 맞는지 확인하세요. "
+                f"(원본 에러: {e})"
+            ) from e
+
+        # duty 0%로 시작 (신호 없음 상태)
+        self.yaw_pwm.start(0)
+        self.pitch_pwm.start(0)
 
         # 선형(속도 제한) 모델의 최대 각속도도 축별로 분리
         self.yaw_max_speed   = max(1e-6, yaw_max_speed)
@@ -240,8 +306,27 @@ class ServoController:
         pw = PW_MID + ((angle_deg - 90) / 180.0) * (PW_MAX - PW_MIN)
         return int(max(PW_MIN, min(PW_MAX, pw)))
 
-    def _set_pw(self, pin: int, pw: int):
-        self.pi.set_servo_pulsewidth(pin, pw)
+    def _pw_to_duty_percent(self, pw_us: float) -> float:
+        """
+        펄스폭[us] → duty cycle[%] 변환.
+
+        period_us = 1e6 / PWM_FREQ_HZ (330Hz 기준 약 3030.3us).
+        각도→펄스폭 매핑(_angle_to_pw)은 주파수와 무관하게 그대로 두고,
+        이 함수에서만 실제 하드웨어가 요구하는 duty cycle[%]로 변환한다.
+
+        예) 330Hz(주기 약 3030.3us)에서 PW_MIN=520us → 약 17.2%,
+        PW_MID=1520us(중립) → 약 50.2%, PW_MAX=2520us → 약 83.2%.
+        (50Hz 기준 2.5~12.5%보다 duty 폭이 훨씬 넓다. 서보가 330Hz 구동을
+        지원하는 사양이라는 전제하에 계산식만 정확히 맞춘 것이며, 실제 서보가
+        이 주파수에서 정상 동작하는지는 하드웨어 스펙으로 별도 확인 필요.)
+        """
+        if pw_us <= 0:
+            return 0.0
+        duty = (pw_us / self._period_us) * 100.0
+        return max(0.0, min(100.0, duty))
+
+    def _set_pw(self, pwm_channel: "HardwarePWM", pw: float):
+        pwm_channel.change_duty_cycle(self._pw_to_duty_percent(pw))
 
     @staticmethod
     def _step_toward(current: float, target: float, max_speed: float, dt: float) -> float:
@@ -271,11 +356,11 @@ class ServoController:
     # ── 명령각 설정: PWM 출력만 담당 ───────────────────────
     def _write_yaw_cmd(self, angle_deg: float):
         self.yaw_cmd_angle = self._clamp(angle_deg, YAW_MIN, YAW_MAX)
-        self._set_pw(self.yaw_pin, self._angle_to_pw(self.yaw_cmd_angle))
+        self._set_pw(self.yaw_pwm, self._angle_to_pw(self.yaw_cmd_angle))
 
     def _write_pitch_cmd(self, angle_deg: float):
         self.pitch_cmd_angle = self._clamp(angle_deg, PITCH_MIN, PITCH_MAX)
-        self._set_pw(self.pitch_pin, self._angle_to_pw(self.pitch_cmd_angle))
+        self._set_pw(self.pitch_pwm, self._angle_to_pw(self.pitch_cmd_angle))
 
     # 기존 코드와의 호환용.
     # 주의: set_yaw/set_pitch는 이제 '명령각'을 보내는 함수이고,
@@ -314,7 +399,7 @@ class ServoController:
         # 현재 추정각 기준으로 다음 명령각 계산
         raw_yaw   = self.yaw_angle   - yaw_cmd_delta
         raw_pitch = self.pitch_angle + pitch_cmd_delta
-        
+
         print(
         #f"ERR=({yaw_err:6.2f},{pitch_err:6.2f}) | "
         f"PID=({yaw_cmd_delta:6.2f},{pitch_cmd_delta:6.2f}) | "
@@ -400,7 +485,10 @@ class ServoController:
 
         time.sleep(1)
 
-        self._set_pw(YAW_PIN, 0)
-        self._set_pw(PITCH_PIN, 0)
+        # duty 0% → 펄스 신호 정지
+        self.yaw_pwm.change_duty_cycle(0)
+        self.pitch_pwm.change_duty_cycle(0)
+        time.sleep(0.05)
 
-        self.pi.stop()
+        self.yaw_pwm.stop()
+        self.pitch_pwm.stop()
