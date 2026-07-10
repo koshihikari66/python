@@ -181,12 +181,15 @@ class ServoController:
         # ── IMU(MPU6050) 기반 피치 실제각 측정 ──────────────
         # True로 켜면 _update_servo_position()에서 pitch_angle을
         # 선형(속도 제한) 모델 대신 MPU6050 실측값(가속도계+자이로 상보 필터)
-        # 으로 갱신한다.
+        # 으로 갱신한다. mpu6050_imu.py 내부에서 I2C read는 전용 백그라운드
+        # 스레드가 담당하므로, 여기서 매 프레임 호출해도 메인(카메라) 루프를
+        # 블로킹하지 않는다.
         # (yaw는 현재 90도 고정 축이라 IMU를 사용하지 않고 계속 선형 모델을 쓴다.)
         use_imu: bool = False,
         imu_i2c_addr: int = 0x68,
         imu_use_gyro_fusion: bool = True,
-        imu_comp_alpha: float = 0.98,
+        imu_tau: float = 1.5,
+        imu_poll_hz: float = 100.0,
         imu_pitch_sign: float = 1.0,
         imu_calib_samples: int = 30,
     ):
@@ -263,7 +266,8 @@ class ServoController:
             self.imu = MPU6050IMU(
                 i2c_addr=imu_i2c_addr,
                 use_gyro_fusion=imu_use_gyro_fusion,
-                comp_alpha=imu_comp_alpha,
+                tau=imu_tau,
+                poll_hz=imu_poll_hz,
                 pitch_sign=imu_pitch_sign,
             )
             # 서보가 실제로 90도(수평 기준 자세)에 안정될 시간을 조금 더 준 뒤

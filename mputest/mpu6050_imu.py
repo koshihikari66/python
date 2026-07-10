@@ -13,16 +13,28 @@ filter)로 아래 둘을 합성해 pitch를 추정한다.
                           계속 적분만 하면 드리프트가 무한정 누적된다.
 
 상보 필터는 매 스텝마다 자이로 적분값을 가속도계 값 쪽으로 조금씩
-끌어당기므로(comp_alpha로 비율 조절), bno085_imu.py의 설계 원칙과 같이
-"오차가 무한정 누적되지 않는" 특성을 유지하면서도 순수 가속도계 값보다
-훨씬 부드러운 pitch를 얻는다. use_gyro_fusion=False로 끄면 가속도계
-값만 사용(BNO_REPORT_GRAVITY와 동일한 방식)한다.
+끌어당기므로(tau로 시간상수 조절), "오차가 무한정 누적되지 않는" 특성을
+유지하면서도 순수 가속도계 값보다 훨씬 부드러운 pitch를 얻는다.
+use_gyro_fusion=False로 끄면 가속도계 값만 사용한다.
 
-adafruit-circuitpython + blinka 스택 대신 smbus2(순수 I2C 레지스터
-접근, 매우 가벼움)만 사용해서 라즈베리파이 자원 부담을 최소화했다.
+── 논블로킹(백그라운드 스레드) 설계 ─────────────────────────
+I2C read는 커널 스케줄링/버스 상황에 따라 가끔 수 ms 이상 튈 수 있는데,
+이걸 카메라 캡처/검출/PID와 같은 스레드에서 매 프레임 동기 호출하면
+그 튀는 순간이 그대로 프레임 처리 지연으로 이어져 프레임이 씹힐 수 있다.
 
-읽기 실패(I2C 노이즈, 타이밍 등) 시 예외를 던지지 않고 마지막 유효값을
-반환하므로, 제어 루프(30Hz)에서 매 프레임 안전하게 호출할 수 있다.
+angle_logger.py(AngleLogger)와 같은 원칙으로, 여기서도 전용 백그라운드
+스레드가 자체 주기(poll_hz)로 계속 I2C를 읽어 상보 필터를 갱신하고
+최신값만 캐시에 저장한다. 메인 루프(get_servo_pitch_angle 호출부)는
+그 캐시를 읽기만 하므로 사실상 0비용이고, I2C read가 블로킹되는 동안에도
+GIL이 풀리므로 메인 캡처 스레드를 막지 않는다.
+
+가속도(6바이트)+자이로(6바이트)는 레지스터 주소가 연속(0x3B~0x48)이므로
+따로 2번 읽지 않고 1번의 14바이트 블록 read로 합쳐 I2C 트랜잭션 자체도
+줄였다.
+
+상보 필터 계수는 고정 alpha 대신 tau(시간상수, 초)로 지정한다.
+alpha = tau / (tau + dt) 로 매 주기 자동 계산되므로, poll_hz(폴링 속도)를
+바꿔도 드리프트 억제 특성(tau)은 그대로 유지된다.
 
 필요 패키지 (Raspberry Pi에서 설치)
 ------------------------------------
@@ -40,26 +52,34 @@ sccpid_first_order.py에서의 사용법은 bno085_imu.BNO085IMU와 동일한
 
 import time
 import math
+import threading
 
 from smbus2 import SMBus
 
 # ── MPU6050 레지스터 주소 ────────────────────────────────────
-_PWR_MGMT_1   = 0x6B
-_SMPLRT_DIV   = 0x19
-_CONFIG       = 0x1A
-_GYRO_CONFIG  = 0x1B
-_ACCEL_CONFIG = 0x1C
-_ACCEL_XOUT_H = 0x3B
-_GYRO_XOUT_H  = 0x43
+_PWR_MGMT_1     = 0x6B
+_SMPLRT_DIV     = 0x19
+_CONFIG         = 0x1A
+_GYRO_CONFIG    = 0x1B
+_ACCEL_CONFIG   = 0x1C
+_ACCEL_XOUT_H   = 0x3B   # 가속도(6B) + 온도(2B) + 자이로(6B) = 연속 14바이트
 
 _ACCEL_SCALE_2G = 16384.0   # LSB / g        (±2g 범위 기준)
 _GYRO_SCALE_250 = 131.0     # LSB / (deg/s)  (±250 deg/s 범위 기준)
+
+# ODR(출력 데이터 갱신 속도)는 SMPLRT_DIV=0x04 설정 기준 1kHz/(1+4)=200Hz.
+# poll_hz가 이보다 빠르면 같은 값을 다시 읽는 것이므로 의미가 없다.
+_MAX_USEFUL_POLL_HZ = 200.0
 
 
 class MPU6050IMU:
     """
     MPU6050 I2C 래퍼. pitch 절대각([deg])을 가속도계+자이로 상보 필터로
-    제공한다. BNO085IMU와 동일한 인터페이스를 유지한다.
+    제공한다. BNO085IMU와 동일한 공개 인터페이스를 유지한다.
+
+    내부적으로 전용 백그라운드 스레드가 poll_hz 주기로 I2C를 읽고 필터를
+    갱신하며, 메인 스레드에서 부르는 read_pitch()/get_servo_pitch_angle()은
+    캐시된 최신값만 반환한다(I2C 접근 없음, 논블로킹).
     """
 
     def __init__(
@@ -67,7 +87,8 @@ class MPU6050IMU:
         i2c_addr: int = 0x68,
         i2c_bus: int = 1,
         use_gyro_fusion: bool = True,   # 상보 필터(자이로+가속도) 사용 여부
-        comp_alpha: float = 0.98,       # 상보 필터 계수 (자이로 비중, 0~1)
+        tau: float = 1.5,               # 상보 필터 시간상수 [s] (자이로 바이어스 드리프트 억제 강도)
+        poll_hz: float = 100.0,         # 백그라운드 스레드 I2C 폴링 주파수 [Hz]
         # 서보 장착 방향에 따라 부호가 반대일 수 있으므로 부호 반전 옵션 제공.
         # 실측 후 부호가 반대로 움직이면 -1.0으로 바꾼다.
         pitch_sign: float = 1.0,
@@ -87,22 +108,34 @@ class MPU6050IMU:
         self.bus.write_byte_data(self.addr, _ACCEL_CONFIG, 0x00)
 
         self.use_gyro_fusion = use_gyro_fusion
-        self.comp_alpha      = comp_alpha
+        self.tau             = tau
         self.pitch_sign      = pitch_sign
 
-        # 읽기 실패 시 폴백으로 쓸 마지막 유효값
-        self._last_pitch = 0.0
-        self._last_t     = None
+        poll_hz = min(poll_hz, _MAX_USEFUL_POLL_HZ)
+        self._poll_interval = 1.0 / poll_hz
 
         # calibrate_zero()로 설정되는 0점 보정값 (서보 90도 기준 자세)
         self._pitch_offset = 0.0
 
-        # 상보 필터 시작점을 가속도계 값으로 초기화
+        # 캐시(락으로 보호) - 백그라운드 스레드가 쓰고, 메인 스레드가 읽는다.
+        self._lock  = threading.Lock()
+        self._cache_pitch = 0.0
+
+        # 필터 내부 상태는 백그라운드 스레드만 접근하므로 락 불필요.
+        self._filt_pitch = None
+        self._last_t     = None
+
+        # 시작 전 최초 1회 동기 read로 초기값을 채워둔다(빈 캐시로 시작 방지).
         try:
-            self._last_pitch = self._read_accel_pitch()
+            self._filt_pitch = self._read_accel_pitch()
         except Exception:
-            self._last_pitch = 0.0
+            self._filt_pitch = 0.0
+        self._cache_pitch = self._filt_pitch
         self._last_t = time.time()
+
+        self._stop   = threading.Event()
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()
 
     # ── 내부: 레지스터 읽기 ──────────────────────────────
     @staticmethod
@@ -110,62 +143,81 @@ class MPU6050IMU:
         val = (hi << 8) | lo
         return val - 65536 if val >= 32768 else val
 
-    def _read_raw(self, reg: int):
-        data = self.bus.read_i2c_block_data(self.addr, reg, 6)
-        x = self._to_signed16(data[0], data[1])
-        y = self._to_signed16(data[2], data[3])
-        z = self._to_signed16(data[4], data[5])
-        return x, y, z
+    def _read_accel_gyro(self):
+        """가속도(6B)+온도(2B)+자이로(6B) 14바이트를 한 번의 I2C 트랜잭션으로 읽는다."""
+        data = self.bus.read_i2c_block_data(self.addr, _ACCEL_XOUT_H, 14)
+        ax = self._to_signed16(data[0],  data[1])
+        ay = self._to_signed16(data[2],  data[3])
+        az = self._to_signed16(data[4],  data[5])
+        # data[6:8]는 온도, 사용 안 함
+        gx = self._to_signed16(data[8],  data[9])
+        gy = self._to_signed16(data[10], data[11])
+        gz = self._to_signed16(data[12], data[13])
+        return (ax, ay, az), (gx, gy, gz)
 
     def _read_accel_pitch(self) -> float:
-        ax, ay, az = self._read_raw(_ACCEL_XOUT_H)
+        (ax, ay, az), _ = self._read_accel_gyro()
         ax /= _ACCEL_SCALE_2G
         ay /= _ACCEL_SCALE_2G
         az /= _ACCEL_SCALE_2G
         return math.degrees(math.atan2(-ax, math.hypot(ay, az)))
 
-    def _read_gyro_y_rate(self) -> float:
-        # bno085_imu.py의 pitch 축 정의(atan2(-ax, ...))에 대응하는 각속도는
-        # 자이로 Y축이다.
-        _, gy, _ = self._read_raw(_GYRO_XOUT_H)
-        return gy / _GYRO_SCALE_250   # [deg/s]
+    # ── 백그라운드 폴링 스레드 ───────────────────────────
+    def _poll_loop(self):
+        while not self._stop.is_set():
+            loop_start = time.time()
+            self._poll_once()
+            elapsed = time.time() - loop_start
+            time.sleep(max(0.0, self._poll_interval - elapsed))
+
+    def _poll_once(self):
+        now = time.time()
+        dt  = (now - self._last_t) if self._last_t else self._poll_interval
+        self._last_t = now
+
+        try:
+            (ax, ay, az), (gx, gy, gz) = self._read_accel_gyro()
+            accel_pitch = math.degrees(
+                math.atan2(-ax / _ACCEL_SCALE_2G,
+                           math.hypot(ay / _ACCEL_SCALE_2G, az / _ACCEL_SCALE_2G))
+            )
+
+            # dt가 비정상적으로 크면(스레드 시작 직후, 일시적 스케줄링 지연 등)
+            # 자이로 적분을 건너뛰고 가속도계 값을 그대로 사용해 오버슈트를 방지한다.
+            if self.use_gyro_fusion and 0.0 < dt < 0.5:
+                gyro_rate  = gy / _GYRO_SCALE_250   # pitch 축(atan2(-ax,...))에 대응하는 각속도 = gyro Y
+                gyro_pitch = self._filt_pitch + gyro_rate * dt
+
+                # alpha = tau / (tau + dt) : poll_hz(=dt)가 바뀌어도 tau(드리프트
+                # 억제 시간상수)가 그대로 유지되도록 매 스텝 dt로부터 재계산.
+                alpha = self.tau / (self.tau + dt)
+                pitch = alpha * gyro_pitch + (1.0 - alpha) * accel_pitch
+            else:
+                pitch = accel_pitch
+
+            self._filt_pitch = pitch
+            with self._lock:
+                self._cache_pitch = pitch
+        except Exception:
+            # I2C 읽기 실패 - 캐시를 마지막 유효값으로 유지(갱신하지 않음)
+            pass
 
     # ── 공개 API ─────────────────────────────────────────
     def read_pitch(self) -> float:
         """
-        원시 pitch(0점 보정 전) [deg] 반환.
-        실패 시 마지막 유효값을 반환한다.
+        원시 pitch(0점 보정 전) [deg] 반환. 백그라운드 스레드가 채워둔 캐시를
+        읽기만 하므로 I2C 접근이 없고(논블로킹), 매 프레임 호출해도 안전하다.
         """
-        now = time.time()
-        dt  = (now - self._last_t) if self._last_t else 0.0
-        self._last_t = now
-
-        try:
-            accel_pitch = self._read_accel_pitch()
-
-            # dt가 비정상적으로 크면(첫 호출, 프레임 드랍 등) 자이로 적분을
-            # 건너뛰고 가속도계 값을 그대로 사용해 오버슈트를 방지한다.
-            if self.use_gyro_fusion and 0.0 < dt < 0.5:
-                gyro_rate  = self._read_gyro_y_rate()
-                gyro_pitch = self._last_pitch + gyro_rate * dt
-                pitch = (
-                    self.comp_alpha * gyro_pitch
-                    + (1.0 - self.comp_alpha) * accel_pitch
-                )
-            else:
-                pitch = accel_pitch
-
-            self._last_pitch = pitch
-            return pitch
-        except Exception:
-            return self._last_pitch
+        with self._lock:
+            return self._cache_pitch
 
     def calibrate_zero(self, samples: int = 30, delay: float = 0.02):
         """
         현재 자세를 0점으로 잡는다.
         서보가 실제로 명령각 90도(수평 기준 자세)에 도달해 안정된 상태에서
         호출해야 이후 get_servo_pitch_angle()의 90도 기준이 정확해진다.
-        평균으로 노이즈를 줄인다.
+        평균으로 노이즈를 줄인다. (delay 간격으로 캐시를 여러 번 샘플링 —
+        poll_hz가 1/delay보다 빠르면 매번 새 값을 얻는다.)
         """
         vals = []
         for _ in range(samples):
@@ -186,6 +238,11 @@ class MPU6050IMU:
         return 90.0 + self.pitch_sign * (pitch - self._pitch_offset)
 
     def close(self):
+        self._stop.set()
+        try:
+            self._thread.join(timeout=1.0)
+        except Exception:
+            pass
         try:
             self.bus.close()
         except Exception:
