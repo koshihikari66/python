@@ -1,20 +1,12 @@
-#include <SoftwareSerial.h>
-
-// PP-A435 OUT 핀을 여기에 연결 (하드웨어 Serial 0/1번 핀은 USB 업로드용으로 비워둠)
-const int RX_PIN = 8;
-const int TX_PIN = 9;   // 실제로 사용하지 않지만 SoftwareSerial 생성자에 핀이 필요 (빈 핀 지정)
-
-SoftwareSerial laserSerial(RX_PIN, TX_PIN);
-
 void setup() {
-  Serial.begin(9600);        // USB 시리얼 모니터 (디버그 출력용)
-  laserSerial.begin(2400);   // 라즈베리파이 BAUD_RATE와 반드시 동일
+  Serial.begin(9600);         // USB 시리얼 모니터 (디버그 출력용, R4는 네이티브 USB)
+  Serial1.begin(2400);        // 라즈베리파이 BAUD_RATE와 반드시 동일
   Serial.println(F("레이저 수신 대기 중..."));
 }
 
 void loop() {
-  while (laserSerial.available()) {
-    char c = (char)laserSerial.read();
-    Serial.write(c);   // 받는 즉시 그대로 시리얼 모니터에 출력
+  while (Serial1.available()) {
+    char c = (char)Serial1.read();
+    Serial.write(c);
   }
 }
