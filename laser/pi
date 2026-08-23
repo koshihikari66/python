@@ -1,41 +1,103 @@
 #!/usr/bin/env python3
 """
-라즈베리파이 -> 아두이노 레이저 통신 송신 스크립트
-UART TX 핀(GPIO14)에 연결된 레이저 송신 모듈을 통해 텍스트 파일 내용을 전송합니다.
+라즈베리파이 -> 아두이노 레이저 통신 송신 스크립트 (pigpio 비트뱅잉 버전)
 
-sudo raspi-config
-# Interface Options → Serial Port
-#   "login shell over serial?" → No
-#   "serial port hardware enabled?" → Yes
-sudo reboot
+UART(/dev/serial0)를 쓰지 않고, GPIO 핀을 직접 ON/OFF 해서
+레이저를 켰다 껐다 하며 지정한 비트 문자열(예: "001100010")을
+계속 반복 전송합니다. 서보 제어에서 이미 pigpio를 쓰고 있으므로
+라이브러리를 통일하기 위해 RPi.GPIO 대신 pigpio를 사용합니다.
 
-# 확인
-ls -l /dev/serial0
+사전 준비 (서보 제어에서 이미 pigpiod를 쓰고 있다면 대부분 끝나있음):
+    sudo apt install pigpio python3-pigpio
+    sudo systemctl enable pigpiod --now
 
-pip3 install pyserial --break-system-packages
+nnewredc.py 같은 다른 스크립트에서 이 파일을 모듈로 import해서 쓸 수 있도록
+백그라운드 스레드로 동작하는 start_laser_tx() / stop_laser_tx()를 제공합니다.
+단독 실행(python3 pi.py)도 그대로 가능합니다.
+
+── nnewredc.py에 추가하는 법 (nnewredc.py는 직접 수정, 이 파일은 그대로 둘 것) ──
+1) 상단 import 구역, 다른 로컬 모듈(import xy2angle) 근처에:
+       import pi
+
+2) main() 함수에서 while True: 트래킹 루프 진입 직전에:
+       pi.start_laser_tx()
+
+3) main()의 finally 블록, servo.stop() / cap.release()와 같은 자리에 추가:
+       finally:
+           logger.close()
+           servo.stop()
+           cap.release()
+           pi.stop_laser_tx()   # 추가
+────────────────────────────────────────────────────────────────
 """
 
-import serial
+import threading
 import time
 
-SERIAL_PORT = '/dev/serial0'   # 안 되면 '/dev/ttyAMA0' 로 변경해서 시도
-BAUD_RATE = 2400               # 아두이노 SoftwareSerial 설정값과 반드시 동일해야 함
-FILE_PATH = '/home/pi/message.txt'
-END_MARKER = '\n<<EOF>>\n'      # 아두이노 쪽 종료 마커와 일치해야 함
+import pigpio
+
+LASER_PIN    = 18          # 레이저 모듈 신호선을 연결한 GPIO 핀 번호 (BCM 기준, 배선에 맞게 수정)
+BIT_STRING   = "001100010" # 반복 전송할 비트 문자열
+BIT_DURATION = 0.05        # 비트 1개당 유지 시간 [초] — 작을수록 빠르게 반복
+
+_pi      = None
+_running = False
+_thread  = None
+_lock    = threading.Lock()
 
 
-def send_file(path: str):
-    with serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1) as ser:
-        time.sleep(2)  # 포트 안정화 대기 (연결 직후 바로 쓰면 앞부분 유실될 수 있음)
+def _tx_loop(bitstring: str, bit_duration: float):
+    """bitstring을 처음부터 끝까지 GPIO로 내보내는 걸 _running이 False가 될 때까지 반복."""
+    global _pi
+    _pi = pigpio.pi()
+    if not _pi.connected:
+        raise RuntimeError(
+            "pigpiod에 연결할 수 없습니다. 'sudo systemctl start pigpiod'로 데몬을 먼저 켜주세요."
+        )
+    _pi.set_mode(LASER_PIN, pigpio.OUTPUT)
 
-        with open(path, 'r', encoding='utf-8') as f:
-            content = f.read()
+    try:
+        while _running:
+            for bit in bitstring:
+                if not _running:
+                    break
+                _pi.write(LASER_PIN, 1 if bit == '1' else 0)
+                time.sleep(bit_duration)
+    finally:
+        _pi.write(LASER_PIN, 0)
 
-        payload = (content + END_MARKER).encode('utf-8')
-        ser.write(payload)
-        ser.flush()
-        print(f"전송 완료: {len(content)}자, {len(payload)}바이트")
+
+def start_laser_tx(bitstring: str = BIT_STRING, bit_duration: float = BIT_DURATION):
+    """레이저 송신을 백그라운드 스레드로 시작. 이미 실행 중이면 아무 것도 안 함."""
+    global _running, _thread
+    with _lock:
+        if _running:
+            return
+        _running = True
+        _thread = threading.Thread(
+            target=_tx_loop, args=(bitstring, bit_duration), daemon=True
+        )
+        _thread.start()
+
+
+def stop_laser_tx():
+    """송신 스레드를 멈추고 pigpio 연결을 정리."""
+    global _running
+    with _lock:
+        _running = False
+    if _thread is not None:
+        _thread.join(timeout=1)
+    if _pi is not None:
+        _pi.stop()
 
 
 if __name__ == '__main__':
-    send_file(FILE_PATH)
+    start_laser_tx()
+    print(f"'{BIT_STRING}' 반복 송신 중 (핀 GPIO{LASER_PIN}). Ctrl+C로 종료.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n종료")
+    finally:
+        stop_laser_tx()

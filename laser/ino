@@ -1,12 +1,39 @@
+/*
+  레이저 수신 스케치 (Arduino Uno R4 WiFi)
+
+  PP-A435 레이저 수신 모듈의 출력을 RX_PIN에 연결하고,
+  SAMPLE_INTERVAL_MS 주기로 그 핀 상태를 읽어서
+  타임스탬프 없이 비트만 계속 이어붙여서 시리얼로 출력합니다.
+  (예: 01010000010011111011...)
+
+  라즈베리파이 pi.py의 BIT_DURATION(현재 0.05초 = 50ms)과
+  같은 주기로 샘플링하도록 맞춰뒀습니다. 송신 쪽 BIT_DURATION을
+  바꾸면 아래 SAMPLE_INTERVAL_MS도 같이 바꿔주세요.
+
+  파일 저장은 이 스케치에서 하지 않습니다. 아두이노 IDE 시리얼
+  모니터를 열어서 지켜보다가, 다 받은 뒤 내용을 전체 선택 →
+  복사해서 텍스트 파일에 붙여넣으면 됩니다.
+
+  * 아두이노 IDE에 붙여넣을 때: 새 스케치를 연 뒤 이 내용을
+    그대로 복사-붙여넣기하면 됩니다 (확장자는 IDE가 자동으로
+    .ino로 저장해줍니다).
+*/
+
+const int RX_PIN = 2;                          // 수신 모듈 출력 연결 핀 (배선에 맞게 수정)
+const unsigned long SAMPLE_INTERVAL_MS = 50;   // 송신 쪽 BIT_DURATION과 동일하게 맞출 것
+
+unsigned long lastSampleTime = 0;
+
 void setup() {
-  Serial.begin(9600);         // USB 시리얼 모니터 (디버그 출력용, R4는 네이티브 USB)
-  Serial1.begin(2400);        // 라즈베리파이 BAUD_RATE와 반드시 동일
-  Serial.println(F("레이저 수신 대기 중..."));
+  Serial.begin(115200);
+  pinMode(RX_PIN, INPUT);
 }
 
 void loop() {
-  while (Serial1.available()) {
-    char c = (char)Serial1.read();
-    Serial.write(c);
+  unsigned long now = millis();
+  if (now - lastSampleTime >= SAMPLE_INTERVAL_MS) {
+    lastSampleTime = now;
+    int bit = digitalRead(RX_PIN);
+    Serial.print(bit);   // 타임스탬프 없이 비트만 계속 이어붙여서 출력
   }
 }
