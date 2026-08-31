@@ -1,39 +1,154 @@
 /*
-  레이저 수신 스케치 (Arduino Uno R4 WiFi)
+  레이저 수신 - 맨체스터 디코더 (IEEE 802.3 방식)
+  Arduino Uno R4 WiFi + PP-A435 레이저 수신 모듈
 
-  PP-A435 레이저 수신 모듈의 출력을 RX_PIN에 연결하고,
-  SAMPLE_INTERVAL_MS 주기로 그 핀 상태를 읽어서
-  타임스탬프 없이 비트만 계속 이어붙여서 시리얼로 출력합니다.
-  (예: 01010000010011111011...)
+  설계 원칙 (비트 밀림 / 오버샘플링 방지):
+  - 핀을 주기적으로 digitalRead()로 폴링(오버샘플링)하지 않는다.
+    대신 신호가 실제로 바뀌는 순간(엣지)에만 인터럽트가 걸리게 하고,
+    그 순간에만 micros()로 시간을 재는 "엣지 인터벌 디코딩" 방식을 쓴다.
+  - 매 판정은 "이전 엣지로부터 지금까지 걸린 시간"만 보고 하기 때문에
+    기준 시각을 누적하지 않는다. 즉 매 엣지마다 실제 신호에 맞춰
+    다시 동기를 잡으므로, 오래 수신해도 오차가 쌓여 비트가 밀리는
+    일이 없다.
+  - ISR은 시간 비교와 비트 판정만 하고 끝낸다. 실제 Serial 출력처럼
+    느릴 수 있는 작업은 링 버퍼에 담아 loop()에서 처리한다
+    (ISR을 무겁게 만들면 다음 엣지를 놓쳐 비트가 밀릴 수 있기 때문).
 
-  라즈베리파이 pi.py의 BIT_DURATION(현재 0.05초 = 50ms)과
-  같은 주기로 샘플링하도록 맞춰뒀습니다. 송신 쪽 BIT_DURATION을
-  바꾸면 아래 SAMPLE_INTERVAL_MS도 같이 바꿔주세요.
+  ※ BIT_PERIOD_US는 반드시 송신측(tx_manchester.py)의 BIT_PERIOD_US와
+     동일해야 한다. 한쪽만 바꾸면 디코딩이 깨진다.
 
-  파일 저장은 이 스케치에서 하지 않습니다. 아두이노 IDE 시리얼
-  모니터를 열어서 지켜보다가, 다 받은 뒤 내용을 전체 선택 →
-  복사해서 텍스트 파일에 붙여넣으면 됩니다.
-
-  * 아두이노 IDE에 붙여넣을 때: 새 스케치를 연 뒤 이 내용을
-    그대로 복사-붙여넣기하면 됩니다 (확장자는 IDE가 자동으로
-    .ino로 저장해줍니다).
+  노이즈 대응:
+  - 한 전이 구간 안에서 노이즈로 여러 번 튀는(바운스) 경우, 너무 촘촘한
+    간격(MIN_GLITCH_US 미만)의 엣지는 기준 시각을 건드리지 않고 무시한다.
+    (근본 해결은 수신단 RC 필터/슈미트 트리거 같은 하드�웨어 필터.)
+  - 일정 시간(NO_SIGNAL_TIMEOUT_US) 동안 엣지가 전혀 없으면 "신호 없음"으로
+    보고 시리얼에 '-'를 출력하고 동기 상태를 리셋한다.
 */
 
-const int RX_PIN = 2;                          // 수신 모듈 출력 연결 핀 (배선에 맞게 수정)
-const unsigned long SAMPLE_INTERVAL_MS = 50;   // 송신 쪽 BIT_DURATION과 동일하게 맞출 것
+const uint8_t       RX_PIN               = 2;     // 인터럽트 지원 핀으로 배선에 맞게 수정
+const unsigned long BIT_PERIOD_US        = 1000;  // 송신측과 동일하게!
+const unsigned long HALF_PERIOD_US       = BIT_PERIOD_US / 2;
+const unsigned long TOLERANCE_US         = HALF_PERIOD_US / 3;   // 허용 오차(약 ±33%)
+const unsigned long MIN_GLITCH_US        = 50;    // 이보다 촘촘한 엣지는 노이즈로 보고 무시
+const unsigned long NO_SIGNAL_TIMEOUT_US = BIT_PERIOD_US * 3;    // 이만큼 엣지가 없으면 "신호 없음"
 
-unsigned long lastSampleTime = 0;
+// ── ISR <-> loop() 간 공유용 링 버퍼 ──────────────────────────
+const uint8_t BUF_SIZE = 64;
+volatile uint8_t  bitBuffer[BUF_SIZE];
+volatile uint8_t  bufHead = 0;
+volatile uint8_t  bufTail = 0;
+volatile uint32_t overflowCount = 0;   // loop()가 못 따라올 때 카운트(디버그용)
+
+// ── 디코더 상태 (ISR 내부에서만 사용) ─────────────────────────
+volatile unsigned long lastEdgeTime   = 0;
+volatile bool          haveLastEdge   = false;
+volatile bool          midFlag        = false;  // 짧은 간격을 하나 이미 봤는지
+volatile unsigned long lastActivityUs = 0;       // 가장 최근에 "어떤 엣지든" 들어온 시각(노이즈 포함)
+
+void pushBit(uint8_t bit) {
+  uint8_t next = (uint8_t)((bufHead + 1) % BUF_SIZE);
+  if (next != bufTail) {
+    bitBuffer[bufHead] = bit;
+    bufHead = next;
+  } else {
+    overflowCount++;  // 버퍼가 가득 참 (정상 동작에서는 거의 발생하지 않음)
+  }
+}
+
+void onEdge() {
+  unsigned long now = micros();
+  lastActivityUs = now;  // 신호가 살아있다는 것 자체는 노이즈든 진짜든 항상 기록
+
+  if (!haveLastEdge) {
+    lastEdgeTime = now;
+    haveLastEdge = true;
+    midFlag = false;
+    return;
+  }
+
+  unsigned long delta = now - lastEdgeTime;
+
+  if (delta < MIN_GLITCH_US) {
+    // 진짜 전이라기엔 너무 촘촘함 -> 노이즈로 인한 순간 진동(바운스)로 보고 무시.
+    // lastEdgeTime을 갱신하지 않아 원래의 "진짜 전이 후보" 시각을 그대로 유지한다.
+    return;
+  }
+
+  lastEdgeTime = now;   // 여기서부터는 '진짜' 엣지로 인정 -> 기준 시각 갱신 (누적 오차 없음)
+
+  bool isShort = (delta > HALF_PERIOD_US - TOLERANCE_US) &&
+                 (delta < HALF_PERIOD_US + TOLERANCE_US);
+  bool isLong  = (delta > BIT_PERIOD_US - TOLERANCE_US) &&
+                 (delta < BIT_PERIOD_US + TOLERANCE_US);
+
+  if (isLong) {
+    // 긴 간격(약 1비트 구간) = 항상 "비트 중앙 전이" -> 무조건 데이터.
+    // 위상이 어긋나 있었더라도 여기서 자동으로 재동기화된다.
+    pushBit(digitalRead(RX_PIN));  // 802.3: 전이 후 레벨이 곧 비트값
+    midFlag = false;
+  } else if (isShort) {
+    if (midFlag) {
+      // 두 번째 짧은 간격 = 경계 전이 다음의 데이터 전이 -> 비트 확정
+      pushBit(digitalRead(RX_PIN));
+      midFlag = false;
+    } else {
+      // 첫 번째 짧은 간격 = 데이터 전이 다음의 경계 전이 -> 데이터 아님, 대기
+      midFlag = true;
+    }
+  } else {
+    // 예상 범위 밖 간격 -> 노이즈/동기 이탈로 보고 리셋.
+    // 다음 엣지부터 새로 동기를 잡는다 (실제 신호 자체로 재동기화).
+    midFlag = false;
+  }
+}
 
 void setup() {
   Serial.begin(115200);
-  pinMode(RX_PIN, INPUT);
+  pinMode(RX_PIN, INPUT);  // 수신 모듈 출력이 반대로 보이면 INPUT_PULLUP + 로직 반전 고려
+  attachInterrupt(digitalPinToInterrupt(RX_PIN), onEdge, CHANGE);
+  Serial.println("맨체스터(IEEE 802.3) 수신 대기 중...");
 }
 
 void loop() {
-  unsigned long now = millis();
-  if (now - lastSampleTime >= SAMPLE_INTERVAL_MS) {
-    lastSampleTime = now;
-    int bit = digitalRead(RX_PIN);
-    Serial.print(bit);   // 타임스탬프 없이 비트만 계속 이어붙여서 출력
+  bool gotBit = false;
+
+  // 버퍼에 쌓인 비트를 순서대로 시리얼에 출력 (ISR과 별개 타이밍)
+  while (bufTail != bufHead) {
+    noInterrupts();
+    uint8_t bit = bitBuffer[bufTail];
+    bufTail = (uint8_t)((bufTail + 1) % BUF_SIZE);
+    interrupts();
+    Serial.print(bit);
+    gotBit = true;
+  }
+
+  // ── 신호 없음 감지 ('-' 출력) ─────────────────────────────
+  static unsigned long lastDashTime = 0;
+  unsigned long nowUs = micros();
+
+  if (gotBit) {
+    lastDashTime = nowUs;  // 방금 실제 비트가 나왔으니 무신호 타이머 리셋
+  } else {
+    noInterrupts();
+    unsigned long lastAct = lastActivityUs;
+    interrupts();
+
+    if ((nowUs - lastAct > NO_SIGNAL_TIMEOUT_US) &&
+        (nowUs - lastDashTime > NO_SIGNAL_TIMEOUT_US)) {
+      Serial.print('-');
+      lastDashTime = nowUs;
+      noInterrupts();
+      haveLastEdge = false;  // 신호가 다시 들어오면 새로 동기부터 시작
+      midFlag = false;
+      interrupts();
+    }
+  }
+
+  static uint32_t lastOverflowPrinted = 0;
+  if (overflowCount != lastOverflowPrinted) {
+    Serial.print(" [경고: 버퍼 오버플로 ");
+    Serial.print(overflowCount);
+    Serial.println("회 - loop()가 처리 속도를 못 따라감]");
+    lastOverflowPrinted = overflowCount;
   }
 }
