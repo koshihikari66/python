@@ -1,0 +1,153 @@
+"""
+라즈베리파이 GPIO 레이저 송신 - 맨체스터 인코딩 (IEEE 802.3 방식)
+pigpio의 wave(웨이브) 기능을 사용해 하드웨어 타이밍으로 반복 전송한다.
+-> time.sleep() 기반 소프트웨어 루프와 달리 DMA가 파형을 재생하므로
+   CPU/OS 스케줄링 지터에 영향받지 않고 비트가 밀리지 않는다.
+
+★ nnewredc.py(트래킹 스크립트)와 동시에 실행하는 법 ★
+pigpio의 wave 전송은 pigpiod "데몬"이 DMA로 재생한다. 즉 이 스크립트를
+실행한 프로세스가 끝나도, 다른 파이썬 프로세스(nnewredc.py)가 같은
+데몬에 별도로 접속해도 전송은 끊기지 않는다. 서보를 제어하는
+nnewredc.py와는 "같은 pigpiod, 다른 GPIO 핀"으로 완전히 독립적으로
+공존 가능하다.
+
+가장 쉬운 방법 (코드 수정 전혀 필요 없음):
+    sudo pigpiod                 # 데몬 실행 (한 번만, 재부팅 전까지 유지)
+    python3 tx_manchester.py &   # 레이저 송신을 백그라운드로 시작
+    python3 nnewredc.py          # 트래킹 스크립트는 그대로 실행
+
+한 프로세스에서 같이 켜고 싶다면 파일 맨 아래 "모듈로 사용하기" 참고.
+
+사전 준비:
+    sudo pigpiod
+    pip install pigpio
+"""
+
+import time
+import pigpio
+
+# ------------------- 설정값 -------------------
+LASER_PIN = 17          # 레이저 제어 GPIO 핀 번호(BCM 기준) - 배선에 맞게 수정
+BIT_PERIOD_US = 1000    # 1비트 전송 시간(us). 1000us = 1bit/ms = 1kbps
+HALF_PERIOD_US = BIT_PERIOD_US // 2
+
+# ------------------------------------------------
+
+
+def generate_prbs7(length: int = 127, seed: int = 0x7F) -> str:
+    """
+    PRBS7 생성 (다항식 x^7 + x^6 + 1, ITU-T O.150 기준)
+    seed는 0이 아닌 7비트 값이어야 함. length=127(기본값)이면 정확히 한 주기.
+    LFSR이 127비트 후 정확히 seed 상태로 돌아오므로, 이 시퀀스를
+    wave_send_repeat로 반복 재생해도 이음매 없이 이어지는 PRBS7 스트림이 된다.
+    """
+    reg = seed & 0x7F
+    bits = []
+    for _ in range(length):
+        fb = ((reg >> 6) ^ (reg >> 5)) & 1
+        bits.append(str(fb))
+        reg = ((reg << 1) | fb) & 0x7F
+    return "".join(bits)
+
+
+DATA_BITS = generate_prbs7()  # 127비트 PRBS7 (BER 측정용, 한 주기 = 127비트)
+
+
+def manchester_encode(bits: str):
+    """
+    맨체스터 인코딩 - IEEE 802.3 (Ethernet) 방식
+      비트 0 -> 전반부 High, 후반부 Low  (High->Low 전이)
+      비트 1 -> 전반부 Low,  후반부 High (Low->High 전이)
+    (반대 매핑을 쓰는 G.E. Thomas 방식과 헷갈리지 않도록 주의)
+    수신부 구현 시 이 매핑 기준으로 디코딩해야 함.
+    """
+    levels = []
+    for b in bits:
+        if b == "0":
+            levels.append(1)  # High
+            levels.append(0)  # Low
+        elif b == "1":
+            levels.append(0)  # Low
+            levels.append(1)  # High
+        else:
+            raise ValueError(f"잘못된 비트 문자: {b}")
+    return levels
+
+
+def build_pulses(pin: int, levels, half_period_us: int):
+    """레벨 리스트를 pigpio.pulse 리스트(파형)로 변환"""
+    mask = 1 << pin
+    pulses = []
+    for level in levels:
+        if level == 1:
+            pulses.append(pigpio.pulse(mask, 0, half_period_us))  # ON
+        else:
+            pulses.append(pigpio.pulse(0, mask, half_period_us))  # OFF
+    return pulses
+
+
+def start_tx(pi: "pigpio.pi", pin: int = LASER_PIN, bits: str = DATA_BITS,
+             half_period_us: int = HALF_PERIOD_US) -> int:
+    """
+    웨이브를 만들어 반복 전송을 '시작'만 시키고 바로 리턴한다 (non-blocking).
+    이후로는 pigpiod 데몬이 DMA로 계속 반복 재생하므로, 이 함수를 호출한
+    프로세스가 다른 일을 하거나 심지어 종료돼도 전송은 계속된다.
+    다른 스크립트의 main() 진입 전에 한 번만 호출하면 됨.
+    """
+    pi.set_mode(pin, pigpio.OUTPUT)
+    pi.write(pin, 0)
+
+    levels = manchester_encode(bits)
+    pulses = build_pulses(pin, levels, half_period_us)
+
+    pi.wave_add_generic(pulses)
+    wave_id = pi.wave_create()
+    if wave_id < 0:
+        raise RuntimeError("웨이브 생성 실패")
+
+    pi.wave_send_repeat(wave_id)
+    return wave_id
+
+
+def stop_tx(pi: "pigpio.pi", wave_id: int, pin: int = LASER_PIN):
+    """전송을 멈추고 핀을 Low로 내린다."""
+    pi.wave_tx_stop()
+    pi.wave_delete(wave_id)
+    pi.write(pin, 0)
+
+
+def main():
+    pi = pigpio.pi()
+    if not pi.connected:
+        print("pigpiod에 연결할 수 없습니다. 먼저 'sudo pigpiod'를 실행하세요.")
+        return
+
+    wave_id = start_tx(pi)
+    try:
+        print(f"'{DATA_BITS}' 맨체스터(802.3) 인코딩 반복 전송 중... (Ctrl+C로 종료)")
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n종료합니다.")
+    finally:
+        stop_tx(pi, wave_id)
+        pi.stop()
+
+
+if __name__ == "__main__":
+    main()
+
+
+# ------------------------------------------------------------
+# 모듈로 사용하기 (한 프로세스에서 nnewredc.py와 같이 실행하고 싶을 때)
+# ------------------------------------------------------------
+# nnewredc.py 맨 위쪽(다른 import들 근처)에 아래만 추가하면 됨:
+#
+#   import pigpio
+#   import tx_manchester
+#   _tx_pi = pigpio.pi()          # 서보용과는 별개의 커넥션(핸들)이어도 무방
+#   tx_manchester.start_tx(_tx_pi)
+#
+# start_tx()는 즉시 리턴되므로(non-blocking) 바로 다음 줄
+# (flask_thread.start(), main() 호출 등)로 넘어가도 레이저는 계속 깜빡인다.
+# 스레드나 별도 프로세스를 따로 만들 필요가 없다 - DMA가 알아서 반복한다.
