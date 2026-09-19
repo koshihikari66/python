@@ -51,26 +51,18 @@ class PIDController:
         velocity: float = 0.0,
         use_d: bool = True,
     ) -> float:
-############################################################self prev error 수정함
+############################################################self prev error 수정함, 차분 d 수정함
         if abs(error) < self.deadband:
-            self._prev_error = 0.0
             return 0.0
 
         p = self.kp * error
+        d = -self.kd * velocity if use_d else 0.0
 
-        if not use_d:
-            d = 0.0
-        elif abs(velocity) > 1e-6:
-            d = -self.kd * velocity
-        else:
-            d = self.kd * (error - self._prev_error) / self.dt
-
-        self._prev_error = error
         output = p + d
         return max(-self.output_limit, min(self.output_limit, output))
 
     def reset(self):
-        self._prev_error = 0.0
+        pass
 
 
 class ServoController:
