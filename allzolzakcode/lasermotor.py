@@ -6,7 +6,7 @@ import xy2angle
 from angle_logger import AngleLogger
 
 # sudo fuser -k /dev/video2
-from sccpid_first_orderr import ServoController
+from sccpid_laser import ServoController
 
 # ── YAW / PITCH 공통 서보 파라미터 ────────────────────────
 PID_KP = 0.5
