@@ -51,8 +51,10 @@ class PIDController:
         velocity: float = 0.0,
         use_d: bool = True,
     ) -> float:
+############################################################self prev error 수정함
         if abs(error) < self.deadband:
-            error = 0.0
+            self._prev_error = 0.0
+            return 0.0
 
         p = self.kp * error
 
