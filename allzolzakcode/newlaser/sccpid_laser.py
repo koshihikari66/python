@@ -19,7 +19,7 @@ PITCH_MIN, PITCH_MAX = 90, 180
 # - pigpio는 정해진 주파수 표에서만 고르므로 330 요청 시 가장 가까운 값이 적용된다
 #   (기본 샘플레이트 5µs 기준 320Hz). 실제 적용값은 시작할 때 출력된다.
 # - 50 이하로 두면 기존 방식(set_servo_pulsewidth, 50Hz)으로 동작한다.
-PWM_FREQ_HZ = 330
+PWM_FREQ_HZ = 50
 
 
 class PIDController:
