@@ -80,7 +80,7 @@ class ServoController:
         kp: float = 1.0,
         kd: float = 0.0,
         dt: float = 1 / 30,
-        output_limit: float = 60.0,
+        output_limit: float = 4.0,
         deadband: float = 0.5,
         max_speed: float = 90.0,
         home_step_deg: float = 5.0,
@@ -89,6 +89,7 @@ class ServoController:
         settle_margin: float = 1.5,
         settle_min_delay: float = 0.05,
         dwell_frames: int = 8,
+        settle_time: float | None = None,
     ):
         self.pi = pigpio.pi()
         if not self.pi.connected:
@@ -119,6 +120,9 @@ class ServoController:
         #  - dwell_frames: 데드밴드 안에 이 프레임 수만큼 연속으로 머물러야 "조준 완료"로 확정
         self.settle_margin = settle_margin
         self.settle_min_delay = settle_min_delay
+        #  - settle_time: 초 단위 고정 대기시간. 지정하면 이동각과 무관하게 이 값만큼
+        #    항상 대기한다 (None이면 아래 공식으로 계산).
+        self.settle_time = settle_time
         self.dwell_frames = dwell_frames
         self._dwell_count = 0
 
@@ -233,8 +237,11 @@ class ServoController:
         목표에 도달했다고 보고 내부 각도 모델을 명령값과 동기화한다
         (모델과 실제 위치가 어긋나서 생기던 오버슈팅 원인을 제거).
         """
-        max_delta = max(abs(yaw_delta), abs(pitch_delta))
-        wait = max_delta / self.max_speed * self.settle_margin + self.settle_min_delay
+        if self.settle_time is not None:
+            wait = self.settle_time
+        else:
+            max_delta = max(abs(yaw_delta), abs(pitch_delta))
+            wait = max_delta / self.max_speed * self.settle_margin + self.settle_min_delay
         time.sleep(wait)
 
         self.yaw_angle = self.yaw_cmd_angle

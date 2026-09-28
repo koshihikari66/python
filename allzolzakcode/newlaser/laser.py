@@ -9,18 +9,20 @@ from angle_logger import AngleLogger
 from sccpid_laser import ServoController
 
 # ── YAW / PITCH 공통 서보 파라미터 ────────────────────────
-# move-wait-settle 구조: kp=1로 필요한 만큼 한 번에 이동시키고,
-# 완전히 멈출 때까지 기다린 뒤 다음 프레임에서 재측정한다.
-# (오버슈팅보다 정확도가 중요 -> 반응속도는 희생)
+# move-wait-settle 구조: kp=1로 이동시키고, 완전히 멈출 때까지 기다린 뒤
+# 다음 프레임에서 재측정한다. (오버슈팅보다 정확도가 중요 -> 반응속도는 희생)
+# PID_OUTPUT_LIMIT: 서보가 휙 돌지 않도록 1회 이동각을 제한한다.
+# 오차가 이보다 크면 여러 번 나눠서 이동한다.
 PID_KP = 1.0
 PID_KD = 0.00
-PID_OUTPUT_LIMIT = 60.0
+PID_OUTPUT_LIMIT = 4.0
 PID_DEADBAND = 0.5
 SERVO_MAX_SPEED = 180.0
 HOME_STEP_DEG = 6.0
 HOME_STEP_DELAY = 0.1
 SETTLE_MARGIN = 1.5      # 예상 정지시간에 곱하는 안전계수
 SETTLE_MIN_DELAY = 0.05  # 서보 관성/기구 유격 흡수용 최소 대기시간
+SETTLE_TIME = 0.15       # 이동 후 고정 대기시간(초). None이면 위 공식으로 자동 계산
 DWELL_FRAMES = 8         # 데드밴드 안에 이 프레임 수만큼 연속 유지되어야 "조준 완료"
 servo = ServoController(
     kp=PID_KP,
@@ -33,6 +35,7 @@ servo = ServoController(
     settle_margin=SETTLE_MARGIN,
     settle_min_delay=SETTLE_MIN_DELAY,
     dwell_frames=DWELL_FRAMES,
+    settle_time=SETTLE_TIME,
 )
 from flask import Flask, Response, jsonify
 
@@ -724,7 +727,7 @@ def main():
                     dwell_count += 1
                     if dwell_count >= servo.dwell_frames and not aim_locked:
                         aim_locked = True
-                        print("[조준] 목표 락 완료 - 레이저 발사 가능")
+                        print("[조준] 목표 락 완료")
                 else:
                     dwell_count = 0
                     aim_locked = False
