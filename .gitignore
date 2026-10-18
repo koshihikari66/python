@@ -2,3 +2,4 @@
 /camera_calib.npz
 /__pycache__
 /other_calib_images
+/sim_split_fixed.csv
