@@ -271,7 +271,7 @@ H_HIGH1, S_HIGH1, V_HIGH1 =  15, 255, 255
 H_LOW2,  S_LOW2,  V_LOW2  = 165, 100, 100
 H_HIGH2, S_HIGH2, V_HIGH2 = 180, 255, 255
 
-MIN_AREA   = 1
+MIN_AREA   = 6
 MAX_AREA   = 500
 
 # ── ROI 기반 검출 파라미터 ─────────────────────────────────
