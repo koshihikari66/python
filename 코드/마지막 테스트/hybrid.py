@@ -279,7 +279,7 @@ MAX_AREA   = 500
 # 반경을 넓혀가다가 일정 프레임 이상 연속으로 놓치면 전체 프레임으로
 # 되돌아가 재탐색한다. 매 프레임 640x480 전체를 HSV 변환/컨투어
 # 검색하는 것보다 훨씬 적은 픽셀만 처리하면 된다.
-ROI_HALF_INIT           = 80   # 기본 검색 반경 [px]
+ROI_HALF_INIT           = 100   # 기본 검색 반경 [px]
 ROI_HALF_GROWTH         = 60   # 미스 1회당 반경 확장량 [px]
 ROI_MISS_LIMIT_FULLSCAN = 5    # 이 프레임 수 이상 연속 미스면 전체 프레임 스캔
 
@@ -289,11 +289,11 @@ _DILATE_KERNEL = np.ones((3, 3), np.uint8)
 # 0.0 : 순수 correction (현재 프레임 최적 추정)
 # 1.0 : 순수 prediction (다음 프레임 예측)
 # 카메라가 움직이는 환경에서는 0.3~0.5 권장
-BLEND_ALPHA = 0   # 0.0=correction만, 1.0=prediction만 (반드시 0~1)
+BLEND_ALPHA = 0.9   # 0.0=correction만, 1.0=prediction만 (반드시 0~1)
 
 # 몇 프레임 앞을 예측할지 — 이 값으로 레이턴시 보상량 조절
 # 서보 지연 ≈ N프레임이면 N으로 설정 (권장: 2~5)
-N_PREDICT   = 0
+N_PREDICT   = 2
 
 # predict_only → 재검출 복귀 시 서보 명령을 서서히 키우는 프레임 수
 # 재검출 직후 큰 보정이 튀는 것을 방지 (권장: 2~4)
