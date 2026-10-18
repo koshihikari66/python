@@ -529,24 +529,28 @@ def detect_red_led(frame: np.ndarray, roi: tuple = None):
     if not contours:
         return []
 
-    results = []
+    # MIN_AREA~MAX_AREA 범위 안에서 면적이 가장 큰 컨투어 하나만 고른다.
+    # main은 어차피 면적 최대 후보 하나만 쓰므로, 무게중심(moments)은
+    # 선택된 컨투어 하나에 대해서만 계산한다.
+    best = None
+    best_area = 0.0
     for c in contours:
         area = cv2.contourArea(c)
-        if not (MIN_AREA <= area <= MAX_AREA):
-            continue
+        if MIN_AREA <= area <= MAX_AREA and area > best_area:
+            best = c
+            best_area = area
 
-        M = cv2.moments(c)
-        if M["m00"] == 0:
-            continue
+    if best is None:
+        return []
 
-        cx = M["m10"] / M["m00"] + x0
-        cy = M["m01"] / M["m00"] + y0
-        results.append({
-            'centroid': (cx, cy),
-            'area': area,
-        })
+    M = cv2.moments(best)
+    if M["m00"] == 0:
+        return []
 
-    return results
+    return [{
+        'centroid': (M["m10"] / M["m00"] + x0, M["m01"] / M["m00"] + y0),
+        'area': best_area,
+    }]
 
 
 def _red_channel(frame: np.ndarray) -> np.ndarray:
