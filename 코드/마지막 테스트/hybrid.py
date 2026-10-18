@@ -55,7 +55,7 @@ app = Flask(__name__)
 # 과거 프레임이 누적되어 화면이 수백 ms~수 초씩 뒤처지는 현상을 줄인다.
 STREAM_WIDTH        = 480
 STREAM_HEIGHT       = 360
-STREAM_FPS          = 30.0   # 표시 전용 FPS. 추적/서보 제어 FPS와 독립
+STREAM_FPS          = 24.0   # 표시 전용 FPS. 추적/서보 제어 FPS와 독립
 STREAM_JPEG_QUALITY = 55     # 낮을수록 CPU/네트워크 부하 감소
 
 _raw_frame_cond   = threading.Condition()
