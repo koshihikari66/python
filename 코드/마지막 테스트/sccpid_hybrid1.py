@@ -71,7 +71,10 @@ class ServoController:
     두 축의 물리적 특성(부하, 기어비, 마찰 등)이 다를 수 있으므로
     kp/kd/output_limit/deadband를 축별로 따로 튜닝할 수 있게 했다.
 
-    현재 서보 각도는 최대 각속도 기반의 단순 선형 모델로 추정한다.
+    현재 서보 각도 추정 모델:
+      - yaw  : 항상 최대 각속도 제한 선형 모델(split 방식)
+      - pitch: pitch_use_tau=False -> yaw와 같은 선형 속도제한 모델
+               pitch_use_tau=True  -> 1차 지연(τ) + 슬루율(최대 각속도) 제한 모델
     """
 
     def __init__(
@@ -89,6 +92,8 @@ class ServoController:
         dt: float = 1 / 30,
         yaw_max_speed: float = 180.0,
         pitch_max_speed: float = 90.0,
+        pitch_use_tau: bool = False,
+        pitch_tau: float = 0.07,
         home_step_deg: float = 5.0,
         home_step_delay: float = 0.06,
     ):
@@ -105,6 +110,9 @@ class ServoController:
         # YAW / PITCH 모두 최대 각속도 제한 선형 모델 (축별 속도만 분리)
         self.yaw_max_speed = max(1e-6, yaw_max_speed)
         self.pitch_max_speed = max(1e-6, pitch_max_speed)
+        # pitch 각도 추정 방식 선택: True=τ 모델, False=yaw와 동일한 선형 모델
+        self.pitch_use_tau = pitch_use_tau
+        self.pitch_tau = pitch_tau
 
         self.yaw_angle = 90.0
         self.pitch_angle = 90.0
@@ -159,20 +167,54 @@ class ServoController:
             return target
         return current + math.copysign(max_step, diff)
 
+    @staticmethod
+    def _step_toward_tau(
+        current: float,
+        target: float,
+        tau: float,
+        max_speed: float,
+        dt: float,
+    ) -> float:
+        """1차 지연(τ) + 슬루율 제한.
+
+        한 스텝에 (target - current) * (1 - exp(-dt/τ)) 만큼 따라가되,
+        그 변화량이 max_speed * dt를 넘지 않도록 제한한다.
+        τ <= 0 이면 선형 속도제한 모델로 대체한다.
+        """
+        if tau <= 1e-6:
+            return ServoController._step_toward(
+                current, target, max_speed, dt
+            )
+        alpha = 1.0 - math.exp(-dt / tau)
+        step = (target - current) * alpha
+        max_step = max_speed * dt
+        step = max(-max_step, min(max_step, step))
+        return current + step
+
     def _update_servo_position(self):
-        # YAW / PITCH 공통: 명령각을 축별 최대 각속도 제한으로 직접 따라간다.
+        # YAW: 명령각을 최대 각속도 제한으로 직접 따라간다.
         self.yaw_angle = self._step_toward(
             self.yaw_angle,
             self.yaw_cmd_angle,
             self.yaw_max_speed,
             self.dt,
         )
-        self.pitch_angle = self._step_toward(
-            self.pitch_angle,
-            self.pitch_cmd_angle,
-            self.pitch_max_speed,
-            self.dt,
-        )
+        # PITCH: pitch_use_tau 플래그로 τ 모델 / yaw와 동일한 선형 모델 선택
+        if self.pitch_use_tau:
+            self.pitch_angle = self._step_toward_tau(
+                self.pitch_angle,
+                self.pitch_cmd_angle,
+                self.pitch_tau,
+                self.pitch_max_speed,
+                self.dt,
+            )
+        else:
+            self.pitch_angle = self._step_toward(
+                self.pitch_angle,
+                self.pitch_cmd_angle,
+                self.pitch_max_speed,
+                self.dt,
+            )
 
     def _write_yaw_cmd(self, angle_deg: float):
         self.yaw_cmd_angle = self._clamp(angle_deg, YAW_MIN, YAW_MAX)

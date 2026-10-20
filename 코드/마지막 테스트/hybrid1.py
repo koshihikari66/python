@@ -5,21 +5,26 @@ import time
 import xy2angle
 from angle_logger import AngleLogger
 # sudo fuser -k /dev/video2
-from sccpid_hybrid import ServoController
+from sccpid_hybrid1 import ServoController
 
 # ── YAW / PITCH 서보 파라미터 ────────────────────────────
-# 두 축 모두 최대 각속도 제한 선형 모델(split 방식)을 사용한다.
-YAW_PID_KP = 0.13
-YAW_PID_KD = 0.001
-YAW_PID_OUTPUT_LIMIT = 3.0
-YAW_PID_DEADBAND = 1.0
+# yaw는 최대 각속도 제한 선형 모델(split 방식)을 사용한다.
+# pitch는 PITCH_USE_TAU로 선택:
+#   True  -> 1차 지연(τ) + 슬루율 제한 모델
+#   False -> yaw와 같은 선형 속도제한 모델
+YAW_PID_KP = 0.20
+YAW_PID_KD = 0.002
+YAW_PID_OUTPUT_LIMIT = 2.5
+YAW_PID_DEADBAND = 0.0
 YAW_MAX_SPEED = 180.0
 
-PITCH_PID_KP = 0.13
-PITCH_PID_KD = 0.001
-PITCH_PID_OUTPUT_LIMIT = 3.0
-PITCH_PID_DEADBAND = 1.0
-PITCH_MAX_SPEED = 90.0
+PITCH_PID_KP = 0.4
+PITCH_PID_KD = 0.005
+PITCH_PID_OUTPUT_LIMIT = 2.5
+PITCH_PID_DEADBAND = 0.0
+PITCH_MAX_SPEED = 180.0
+PITCH_USE_TAU = False   # True: pitch τ 방식 / False: yaw와 같은 방식
+PITCH_TAU = 0.07        # PITCH_USE_TAU=True일 때만 사용 [s]
 
 CTRL_DT = 1 / 30
 
@@ -37,6 +42,8 @@ servo = ServoController(
     pitch_deadband=PITCH_PID_DEADBAND,
     yaw_max_speed=YAW_MAX_SPEED,
     pitch_max_speed=PITCH_MAX_SPEED,
+    pitch_use_tau=PITCH_USE_TAU,
+    pitch_tau=PITCH_TAU,
     dt=CTRL_DT,
     home_step_deg=HOME_STEP_DEG,
     home_step_delay=HOME_STEP_DELAY,
@@ -55,7 +62,7 @@ app = Flask(__name__)
 # 과거 프레임이 누적되어 화면이 수백 ms~수 초씩 뒤처지는 현상을 줄인다.
 STREAM_WIDTH        = 480
 STREAM_HEIGHT       = 360
-STREAM_FPS          = 24.0   # 표시 전용 FPS. 추적/서보 제어 FPS와 독립
+STREAM_FPS          = 25.0   # 표시 전용 FPS. 추적/서보 제어 FPS와 독립
 STREAM_JPEG_QUALITY = 55     # 낮을수록 CPU/네트워크 부하 감소
 
 _raw_frame_cond   = threading.Condition()
