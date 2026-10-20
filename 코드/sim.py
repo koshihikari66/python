@@ -27,7 +27,7 @@ import numpy as np
 
 # ════════════════════════════════════════════════════════════
 
-SIM_TIME = 10.0          # 시뮬레이션 시간 [초]
+SIM_TIME = 5.0          # 시뮬레이션 시간 [초]
 
 
 
@@ -88,7 +88,7 @@ CTRL_DT = 1 / 30
 
 
 
-YAW_PID_KP = 0.13
+YAW_PID_KP = 0.15
 
 YAW_PID_KD = 0.001
 
@@ -96,7 +96,7 @@ PITCH_KP_BASE = 0.13
 
 PITCH_KD_BASE = 0.001
 
-PID_OUTPUT_LIMIT = 3.0
+PID_OUTPUT_LIMIT = 2.5
 
 # 원본 hybrid.py는 1.0°. 본 시뮬레이션은 미세 오차 수렴 검증을 위해 0.2° 사용.
 # 실제 장비 적용 전에는 떨림/노이즈를 확인한 후 튜닝하세요.
@@ -106,7 +106,7 @@ PID_DEADBAND = 0.2
 
 YAW_MAX_SPEED = 180.0     # deg/s
 
-PITCH_MAX_SPEED = 90.0    # deg/s
+PITCH_MAX_SPEED = 180.0    # deg/s
 
 TAU = 0.07                # tau 방식 시정수 [s]
 

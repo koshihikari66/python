@@ -14,14 +14,14 @@ from sccpid_hybrid1 import ServoController
 #   False -> yaw와 같은 선형 속도제한 모델
 YAW_PID_KP = 0.20
 YAW_PID_KD = 0.002
-YAW_PID_OUTPUT_LIMIT = 2.5
-YAW_PID_DEADBAND = 0.0
+YAW_PID_OUTPUT_LIMIT = 2
+YAW_PID_DEADBAND = 2
 YAW_MAX_SPEED = 180.0
 
 PITCH_PID_KP = 0.4
 PITCH_PID_KD = 0.005
 PITCH_PID_OUTPUT_LIMIT = 2.5
-PITCH_PID_DEADBAND = 0.0
+PITCH_PID_DEADBAND = 2.5
 PITCH_MAX_SPEED = 180.0
 PITCH_USE_TAU = False   # True: pitch τ 방식 / False: yaw와 같은 방식
 PITCH_TAU = 0.07        # PITCH_USE_TAU=True일 때만 사용 [s]
